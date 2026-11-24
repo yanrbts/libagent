@@ -12,14 +12,19 @@
 #define DEMO_DEFAULT_MAX_LINE   (8u * 1024u * 1024u)
 
 typedef struct demo_opts {
-    const char *cmd;        /* Command or executable path for MCP stdio server */
-    const char *tool_name;  /* Target tool name to invoke via tools/call */
-    const char *args_json;  /* JSON object string passed as tool arguments */
-    int         timeout_ms; /* Per-request timeout in milliseconds */
-    size_t      max_line;   /* Max single JSON-RPC frame size in bytes */
-    int         list_only;  /* Non-zero to list tools and exit without calling */
-    char      **child_argv; /* Heap-allocated NULL-terminated argv for child */
-    int         child_argc; /* Number of elements in child_argv excluding NULL */
+    const char *cmd;           /* Command or executable path for MCP stdio server */
+    const char *tool_name;     /* Target tool name to invoke via tools/call */
+    const char *args_json;     /* JSON object string passed as tool arguments */
+    const char *resource_uri;  /* Target resource URI to read via resources/read */
+    const char *prompt_name;   /* Target prompt template name to get via prompts/get */
+    const char *prompt_args;   /* JSON object string passed as prompt arguments */
+    int         timeout_ms;    /* Per-request timeout in milliseconds */
+    size_t      max_line;      /* Max single JSON-RPC frame size in bytes */
+    int         list_only;     /* Non-zero to list tools and exit without calling */
+    int         list_resources;/* Non-zero to list resources via resources/list */
+    int         list_prompts;  /* Non-zero to list prompts via prompts/list */
+    char      **child_argv;    /* Heap-allocated NULL-terminated argv for child */
+    int         child_argc;    /* Number of elements in child_argv excluding NULL */
 } demo_opts_t;
 
 static volatile sig_atomic_t g_stop_requested = 0;
@@ -54,20 +59,29 @@ static void demo_print_usage(const char *prog)
             "Usage: %s [options] [-- <server_cmd> [server_args...]]\n"
             "\n"
             "Options:\n"
-            "  --tool <name>       Tool name to call (default: read_graph)\n"
-            "  --args <json>       JSON object arguments for tool (default: {})\n"
-            "  --timeout-ms <ms>   Request timeout in ms (default: %d)\n"
-            "  --max-line <bytes>  Max JSON-RPC frame size (default: %zu)\n"
-            "  --list-only         List tools and exit without invoking a tool\n"
-            "  -h, --help          Show this help message\n"
+            "  --tool <name>          Tool name to call (default: read_graph)\n"
+            "  --args <json>          JSON object arguments for tool (default: {})\n"
+            "  --list-resources       List server resources via resources/list\n"
+            "  --read-resource <uri>  Read a resource URI via resources/read\n"
+            "  --list-prompts         List server prompts via prompts/list\n"
+            "  --prompt <name>        Prompt template name to fetch via prompts/get\n"
+            "  --prompt-args <json>   JSON object arguments for prompt (default: {})\n"
+            "  --timeout-ms <ms>      Request timeout in ms (default: %d)\n"
+            "  --max-line <bytes>     Max JSON-RPC frame size (default: %zu)\n"
+            "  --list-only            List tools and exit without invoking a tool\n"
+            "  -h, --help             Show this help message\n"
             "\n"
             "Examples:\n"
             "  %s\n"
             "  %s --tool create_entities --args '{\"entities\":[{\"name\":\"AgentCore\",\"entityType\":\"module\",\"observations\":[\"stdio epoll transport\"]}]}'\n"
-            "  %s --tool read_graph -- npx -y @modelcontextprotocol/server-memory\n",
+            "  %s --list-resources --list-prompts -- npx -y @modelcontextprotocol/server-memory\n"
+            "  %s --read-resource file:///tmp/notes.txt -- /path/to/mcp-server\n"
+            "  %s --prompt summarize_diff --prompt-args '{\"branch\":\"main\"}' -- /path/to/mcp-server\n",
             prog,
             DEMO_DEFAULT_TIMEOUT_MS,
             (size_t)DEMO_DEFAULT_MAX_LINE,
+            prog,
+            prog,
             prog,
             prog,
             prog);
@@ -119,6 +133,7 @@ static int demo_parse_args(int argc, char **argv, demo_opts_t *opts)
     memset(opts, 0, sizeof(*opts));
     opts->tool_name = "read_graph";
     opts->args_json = "{}";
+    opts->prompt_args = "{}";
     opts->timeout_ms = DEMO_DEFAULT_TIMEOUT_MS;
     opts->max_line = DEMO_DEFAULT_MAX_LINE;
 
@@ -136,6 +151,10 @@ static int demo_parse_args(int argc, char **argv, demo_opts_t *opts)
             return 1;
         } else if (strcmp(argv[i], "--list-only") == 0) {
             opts->list_only = 1;
+        } else if (strcmp(argv[i], "--list-resources") == 0) {
+            opts->list_resources = 1;
+        } else if (strcmp(argv[i], "--list-prompts") == 0) {
+            opts->list_prompts = 1;
         } else if (strcmp(argv[i], "--tool") == 0) {
             if (i + 1 >= sep_idx || argv[i + 1][0] == '\0') {
                 fprintf(stderr, "[ERROR] --tool requires a non-empty name\n");
@@ -148,6 +167,24 @@ static int demo_parse_args(int argc, char **argv, demo_opts_t *opts)
                 return -1;
             }
             opts->args_json = argv[++i];
+        } else if (strcmp(argv[i], "--read-resource") == 0) {
+            if (i + 1 >= sep_idx || argv[i + 1][0] == '\0') {
+                fprintf(stderr, "[ERROR] --read-resource requires a non-empty URI\n");
+                return -1;
+            }
+            opts->resource_uri = argv[++i];
+        } else if (strcmp(argv[i], "--prompt") == 0) {
+            if (i + 1 >= sep_idx || argv[i + 1][0] == '\0') {
+                fprintf(stderr, "[ERROR] --prompt requires a non-empty template name\n");
+                return -1;
+            }
+            opts->prompt_name = argv[++i];
+        } else if (strcmp(argv[i], "--prompt-args") == 0) {
+            if (i + 1 >= sep_idx) {
+                fprintf(stderr, "[ERROR] --prompt-args requires a JSON string\n");
+                return -1;
+            }
+            opts->prompt_args = argv[++i];
         } else if (strcmp(argv[i], "--timeout-ms") == 0) {
             if (i + 1 >= sep_idx || demo_parse_int(argv[i + 1], &opts->timeout_ms) != 0) {
                 fprintf(stderr, "[ERROR] invalid --timeout-ms value\n");
@@ -196,6 +233,125 @@ static int demo_parse_args(int argc, char **argv, demo_opts_t *opts)
         opts->child_argv[3] = NULL;
         opts->child_argc = 3;
         opts->cmd = opts->child_argv[0];
+    }
+
+    return 0;
+}
+
+static void demo_print_result(const char *kind, const char *target,
+                              int64_t elapsed_ms, const lib_mcp_res_t *res)
+{
+    printf("[INFO] %s '%s' completed in %lld ms (is_error=%d)\n",
+           kind, target, (long long)elapsed_ms, res->is_error);
+    if (res->text) {
+        printf("[TEXT]\n%s\n", res->text);
+    }
+    if (res->raw_json) {
+        printf("[RAW_JSON]\n%s\n", res->raw_json);
+    }
+}
+
+static int demo_handle_resources(lib_mcp_ctx_t *ctx, const demo_opts_t *opts,
+                                 char *errbuf, size_t errlen)
+{
+    if (opts->list_resources && !g_stop_requested) {
+        lib_mcp_resource_t *resources = NULL;
+        size_t res_count = 0;
+        int64_t t_start = lib_mono_ms();
+        lib_mcp_err_t rrc = lib_mcp_resources(ctx, &resources, &res_count, errbuf, errlen);
+        int64_t elapsed = lib_mono_ms() - t_start;
+
+        if (rrc == LIB_MCP_OK) {
+            printf("[INFO] Discovered %zu resource(s) in %lld ms:\n",
+                   res_count, (long long)elapsed);
+            for (size_t i = 0; i < res_count; i++) {
+                printf("  [%zu] %s (%s) - %s\n",
+                       i,
+                       resources[i].uri ? resources[i].uri : "(no uri)",
+                       resources[i].mime_type ? resources[i].mime_type : "unknown mime",
+                       resources[i].description ? resources[i].description
+                                                  : (resources[i].name ? resources[i].name
+                                                                       : "(no description)"));
+            }
+            lib_mcp_free_resources(resources, res_count);
+        } else if (rrc == LIB_MCP_ERR_RPC) {
+            fprintf(stderr, "[WARN] resources/list not supported or rejected (%s): %s\n",
+                    lib_mcp_strerror(rrc), errbuf);
+        } else {
+            fprintf(stderr, "[ERROR] lib_mcp_resources failed (%s): %s\n",
+                    lib_mcp_strerror(rrc), errbuf);
+            return 1;
+        }
+    }
+
+    if (opts->resource_uri && !g_stop_requested) {
+        lib_mcp_res_t rdata;
+        memset(&rdata, 0, sizeof(rdata));
+        int64_t t_start = lib_mono_ms();
+        lib_mcp_err_t rrc = lib_mcp_read_resource(ctx, opts->resource_uri, &rdata,
+                                                  errbuf, errlen);
+        int64_t elapsed = lib_mono_ms() - t_start;
+
+        if (lib_unlikely(rrc != LIB_MCP_OK)) {
+            fprintf(stderr, "[ERROR] lib_mcp_read_resource('%s') failed (%s): %s\n",
+                    opts->resource_uri, lib_mcp_strerror(rrc), errbuf);
+            lib_mcp_free_res(&rdata);
+            return 1;
+        }
+        demo_print_result("Resource", opts->resource_uri, elapsed, &rdata);
+        lib_mcp_free_res(&rdata);
+    }
+
+    return 0;
+}
+
+static int demo_handle_prompts(lib_mcp_ctx_t *ctx, const demo_opts_t *opts,
+                               char *errbuf, size_t errlen)
+{
+    if (opts->list_prompts && !g_stop_requested) {
+        lib_mcp_prompt_t *prompts = NULL;
+        size_t prompt_count = 0;
+        int64_t t_start = lib_mono_ms();
+        lib_mcp_err_t prc = lib_mcp_prompts(ctx, &prompts, &prompt_count, errbuf, errlen);
+        int64_t elapsed = lib_mono_ms() - t_start;
+
+        if (prc == LIB_MCP_OK) {
+            printf("[INFO] Discovered %zu prompt(s) in %lld ms:\n",
+                   prompt_count, (long long)elapsed);
+            for (size_t i = 0; i < prompt_count; i++) {
+                printf("  [%zu] %s (%zu arg(s)) - %s\n",
+                       i,
+                       prompts[i].name ? prompts[i].name : "(unnamed)",
+                       prompts[i].arg_count,
+                       prompts[i].description ? prompts[i].description : "(no description)");
+            }
+            lib_mcp_free_prompts(prompts, prompt_count);
+        } else if (prc == LIB_MCP_ERR_RPC) {
+            fprintf(stderr, "[WARN] prompts/list not supported or rejected (%s): %s\n",
+                    lib_mcp_strerror(prc), errbuf);
+        } else {
+            fprintf(stderr, "[ERROR] lib_mcp_prompts failed (%s): %s\n",
+                    lib_mcp_strerror(prc), errbuf);
+            return 1;
+        }
+    }
+
+    if (opts->prompt_name && !g_stop_requested) {
+        lib_mcp_res_t pres;
+        memset(&pres, 0, sizeof(pres));
+        int64_t t_start = lib_mono_ms();
+        lib_mcp_err_t prc = lib_mcp_get_prompt(ctx, opts->prompt_name, opts->prompt_args,
+                                               &pres, errbuf, errlen);
+        int64_t elapsed = lib_mono_ms() - t_start;
+
+        if (lib_unlikely(prc != LIB_MCP_OK)) {
+            fprintf(stderr, "[ERROR] lib_mcp_get_prompt('%s') failed (%s): %s\n",
+                    opts->prompt_name, lib_mcp_strerror(prc), errbuf);
+            lib_mcp_free_res(&pres);
+            return 1;
+        }
+        demo_print_result("Prompt", opts->prompt_name, elapsed, &pres);
+        lib_mcp_free_res(&pres);
     }
 
     return 0;
@@ -268,6 +424,14 @@ int main(int argc, char **argv)
         }
     }
 
+    if (exit_code == 0 && !g_stop_requested) {
+        exit_code = demo_handle_resources(ctx, &opts, errbuf, sizeof(errbuf));
+    }
+
+    if (exit_code == 0 && !g_stop_requested) {
+        exit_code = demo_handle_prompts(ctx, &opts, errbuf, sizeof(errbuf));
+    }
+
     if (exit_code == 0 && !opts.list_only && !g_stop_requested) {
         lib_mcp_res_t res;
         memset(&res, 0, sizeof(res));
@@ -282,14 +446,7 @@ int main(int argc, char **argv)
                     opts.tool_name, lib_mcp_strerror(crc), errbuf);
             exit_code = 1;
         } else {
-            printf("[INFO] Tool '%s' completed in %lld ms (is_error=%d)\n",
-                   opts.tool_name, (long long)call_elapsed, res.is_error);
-            if (res.text) {
-                printf("[TEXT]\n%s\n", res.text);
-            }
-            if (res.raw_json) {
-                printf("[RAW_JSON]\n%s\n", res.raw_json);
-            }
+            demo_print_result("Tool", opts.tool_name, call_elapsed, &res);
             if (res.is_error) {
                 exit_code = 1;
             }

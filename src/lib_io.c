@@ -18,33 +18,49 @@
 #define LIB_IO_CHUNK_MAX (1024u * 1024u)
 #define LIB_IO_READ_STEP 4096u
 
-static __thread int g_tls_epfd = -1;
-static __thread pid_t g_tls_epfd_pid = 0;
-static pthread_once_t g_atfork_once = PTHREAD_ONCE_INIT;
 
+static __thread int g_tls_epfd = -1;                     /* Thread-local epoll instance fd; -1 means not yet created on this thread. */
+static __thread pid_t g_tls_epfd_pid = 0;                /* PID that created or validated g_tls_epfd; detects stale state after fork(). */
+static pthread_once_t g_atfork_once = PTHREAD_ONCE_INIT; /* Ensures pthread_atfork() is registered exactly once across all threads. */
+
+/* Runs in the child process after fork() so inherited epoll fds are never shared. */
 static void lib_io_on_fork_child(void) {
-    /* Child must never reuse parent's epoll instance; close if inherited. */
+    /* Close any epoll fd inherited from the 
+     * parent process address space/fd table. */
     if (g_tls_epfd >= 0) {
         close(g_tls_epfd);
         g_tls_epfd = -1;
     }
+    /* Record the new child PID so subsequent 
+     * PID checks match the active process. */
     g_tls_epfd_pid = getpid();
 }
 
+/* Initializes fork safety tracking once for the current process. */
 static void lib_io_init_atfork(void) {
+    /* Capture initial PID before registering the child fork handler. */
     g_tls_epfd_pid = getpid();
+
+    /* Register only a child handler; 
+     * pre-fork and parent handlers are not needed. */
     (void)pthread_atfork(NULL, NULL, lib_io_on_fork_child);
 }
 
+/* Returns a valid per-thread epoll fd for the current process, creating it lazily. */
 static int lib_io_get_epfd(void) {
+    /* Guarantee pthread_atfork() registration 
+     * is completed once in a thread-safe way. */
     (void)pthread_once(&g_atfork_once, lib_io_init_atfork);
 
+    /* Guard against cases where a forked 
+     * child did not run the handler as expected. */
     pid_t cur_pid = getpid();
     if (lib_unlikely(g_tls_epfd_pid != cur_pid)) {
         g_tls_epfd = -1;
         g_tls_epfd_pid = cur_pid;
     }
 
+    /* Lazily create the thread-local epoll instance on first use. */
     if (lib_unlikely(g_tls_epfd < 0)) {
         g_tls_epfd = epoll_create1(EPOLL_CLOEXEC);
     }
