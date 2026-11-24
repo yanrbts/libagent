@@ -1,8 +1,13 @@
+/**
+ * Copyright (c) 2026 yanrbts
+ *
+ * Unit and stress tests for lib_buf and lib_io using Unity.
+ */
 #include "lib_buf.h"
 #include "lib_io.h"
+#include "unity.h"
 #include "util.h"
 
-#include <assert.h>
 #include <errno.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -32,6 +37,14 @@ typedef struct io_echo_peer_arg {
     int failed;     /* Non-zero if peer encountered an error */
 } io_echo_peer_arg_t;
 
+void setUp(void)
+{
+}
+
+void tearDown(void)
+{
+}
+
 /* Fills dst with deterministic printable payload bytes terminated by '\n'. */
 static void fill_deterministic_line(char *dst, size_t total_len, uint64_t seed)
 {
@@ -54,137 +67,139 @@ static void test_buf_and_io_args(void)
     lib_buf_t buf;
     memset(&buf, 0, sizeof(buf));
 
-    assert(lib_buf_init(NULL, 64, 1024) == LIB_BUF_ERR);
-    assert(errno == EINVAL);
+    TEST_ASSERT_EQUAL_INT(LIB_BUF_ERR, lib_buf_init(NULL, 64, 1024));
+    TEST_ASSERT_EQUAL_INT(EINVAL, errno);
 
-    assert(lib_buf_init(&buf, 64, 0) == LIB_BUF_ERR);
-    assert(errno == EINVAL);
+    TEST_ASSERT_EQUAL_INT(LIB_BUF_ERR, lib_buf_init(&buf, 64, 0));
+    TEST_ASSERT_EQUAL_INT(EINVAL, errno);
 
-    assert(lib_buf_reserve(NULL, 64) == LIB_BUF_ERR);
+    TEST_ASSERT_EQUAL_INT(LIB_BUF_ERR, lib_buf_reserve(NULL, 64));
     lib_buf_free(NULL);
     lib_buf_consume(NULL, 16);
 
-    assert(lib_buf_init(&buf, 16, 128) == LIB_BUF_OK);
-    assert(buf.cap == 16);
-    assert(buf.max_cap == 128);
+    TEST_ASSERT_EQUAL_INT(LIB_BUF_OK, lib_buf_init(&buf, 16, 128));
+    TEST_ASSERT_EQUAL_UINT64(16u, (uint64_t)buf.cap);
+    TEST_ASSERT_EQUAL_UINT64(128u, (uint64_t)buf.max_cap);
 
-    assert(lib_buf_reserve(&buf, 64) == LIB_BUF_OK);
-    assert(buf.cap >= 64 && buf.cap <= 128);
+    TEST_ASSERT_EQUAL_INT(LIB_BUF_OK, lib_buf_reserve(&buf, 64));
+    TEST_ASSERT_TRUE(buf.cap >= 64u && buf.cap <= 128u);
 
-    assert(lib_buf_reserve(&buf, 129) == LIB_BUF_OVERFLOW);
-    assert(errno == EMSGSIZE);
+    TEST_ASSERT_EQUAL_INT(LIB_BUF_OVERFLOW, lib_buf_reserve(&buf, 129));
+    TEST_ASSERT_EQUAL_INT(EMSGSIZE, errno);
 
     memcpy(buf.data, "abcdef", 6);
     buf.len = 6;
     lib_buf_consume(&buf, 2);
-    assert(buf.len == 4);
-    assert(memcmp(buf.data, "cdef", 4) == 0);
+    TEST_ASSERT_EQUAL_UINT64(4u, (uint64_t)buf.len);
+    TEST_ASSERT_EQUAL_INT(0, memcmp(buf.data, "cdef", 4));
 
     lib_buf_consume(&buf, 100);
-    assert(buf.len == 0);
+    TEST_ASSERT_EQUAL_UINT64(0u, (uint64_t)buf.len);
 
     lib_buf_free(&buf);
-    assert(buf.data == NULL && buf.cap == 0 && buf.len == 0);
+    TEST_ASSERT_NULL(buf.data);
+    TEST_ASSERT_EQUAL_UINT64(0u, (uint64_t)buf.cap);
+    TEST_ASSERT_EQUAL_UINT64(0u, (uint64_t)buf.len);
 
     char *line = NULL;
-    assert(lib_io_write_all(-1, "x", 1, 0) == LIB_IO_ERR);
-    assert(errno == EBADF);
-    assert(lib_io_write_all(0, NULL, 4, 0) == LIB_IO_ERR);
-    assert(errno == EINVAL);
-    assert(lib_io_read_line(-1, &buf, &line, 0) == LIB_IO_ERR);
-    assert(errno == EBADF);
-
-    printf("[PASS] test_buf_and_io_args\n");
+    TEST_ASSERT_EQUAL_INT(LIB_IO_ERR, lib_io_write_all(-1, "x", 1, 0));
+    TEST_ASSERT_EQUAL_INT(EBADF, errno);
+    TEST_ASSERT_EQUAL_INT(LIB_IO_ERR, lib_io_write_all(0, NULL, 4, 0));
+    TEST_ASSERT_EQUAL_INT(EINVAL, errno);
+    TEST_ASSERT_EQUAL_INT(LIB_IO_ERR, lib_io_read_line(-1, &buf, &line, 0));
+    TEST_ASSERT_EQUAL_INT(EBADF, errno);
 }
 
 static void test_framing_crlf_multiframe_and_overflow(void)
 {
     int sv[2] = {-1, -1};
-    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
-    assert(lib_set_nonblock(sv[0]) == 0);
-    assert(lib_set_nonblock(sv[1]) == 0);
+    TEST_ASSERT_EQUAL_INT(0, socketpair(AF_UNIX, SOCK_STREAM, 0, sv));
+    TEST_ASSERT_EQUAL_INT(0, lib_set_nonblock(sv[0]));
+    TEST_ASSERT_EQUAL_INT(0, lib_set_nonblock(sv[1]));
 
     lib_buf_t rbuf;
-    assert(lib_buf_init(&rbuf, 32, 256) == LIB_BUF_OK);
+    TEST_ASSERT_EQUAL_INT(LIB_BUF_OK, lib_buf_init(&rbuf, 32, 256));
 
     const char *batch = "first_line\nsecond_crlf\r\nthird_line\n";
     int64_t deadline = lib_mono_ms() + 2000;
-    assert(lib_io_write_all(sv[1], batch, strlen(batch), deadline) == LIB_IO_OK);
+    TEST_ASSERT_EQUAL_INT(LIB_IO_OK,
+                          lib_io_write_all(sv[1], batch, strlen(batch), deadline));
 
     char *line = NULL;
-    assert(lib_io_read_line(sv[0], &rbuf, &line, deadline) == LIB_IO_OK);
-    assert(line != NULL && strcmp(line, "first_line") == 0);
+    TEST_ASSERT_EQUAL_INT(LIB_IO_OK, lib_io_read_line(sv[0], &rbuf, &line, deadline));
+    TEST_ASSERT_NOT_NULL(line);
+    TEST_ASSERT_EQUAL_STRING("first_line", line);
     free(line);
     line = NULL;
 
-    assert(lib_io_read_line(sv[0], &rbuf, &line, deadline) == LIB_IO_OK);
-    assert(line != NULL && strcmp(line, "second_crlf") == 0);
+    TEST_ASSERT_EQUAL_INT(LIB_IO_OK, lib_io_read_line(sv[0], &rbuf, &line, deadline));
+    TEST_ASSERT_NOT_NULL(line);
+    TEST_ASSERT_EQUAL_STRING("second_crlf", line);
     free(line);
     line = NULL;
 
-    assert(lib_io_read_line(sv[0], &rbuf, &line, deadline) == LIB_IO_OK);
-    assert(line != NULL && strcmp(line, "third_line") == 0);
+    TEST_ASSERT_EQUAL_INT(LIB_IO_OK, lib_io_read_line(sv[0], &rbuf, &line, deadline));
+    TEST_ASSERT_NOT_NULL(line);
+    TEST_ASSERT_EQUAL_STRING("third_line", line);
     free(line);
     line = NULL;
 
     char oversized[400];
     memset(oversized, 'A', sizeof(oversized));
     oversized[sizeof(oversized) - 1u] = '\n';
-    assert(lib_io_write_all(sv[1], oversized, sizeof(oversized), deadline) == LIB_IO_OK);
+    TEST_ASSERT_EQUAL_INT(LIB_IO_OK,
+                          lib_io_write_all(sv[1], oversized, sizeof(oversized), deadline));
 
     lib_io_status_t st = lib_io_read_line(sv[0], &rbuf, &line, deadline);
-    assert(st == LIB_IO_OVERFLOW);
-    assert(line == NULL);
+    TEST_ASSERT_EQUAL_INT(LIB_IO_OVERFLOW, st);
+    TEST_ASSERT_NULL(line);
 
     lib_close_fd(&sv[1]);
     lib_buf_t eof_buf;
-    assert(lib_buf_init(&eof_buf, 64, 1024) == LIB_BUF_OK);
-    assert(lib_io_read_line(sv[0], &eof_buf, &line, deadline) == LIB_IO_EOF);
-    assert(line == NULL);
+    TEST_ASSERT_EQUAL_INT(LIB_BUF_OK, lib_buf_init(&eof_buf, 64, 1024));
+    TEST_ASSERT_EQUAL_INT(LIB_IO_EOF, lib_io_read_line(sv[0], &eof_buf, &line, deadline));
+    TEST_ASSERT_NULL(line);
 
     lib_buf_free(&eof_buf);
     lib_buf_free(&rbuf);
     lib_close_fd(&sv[0]);
-
-    printf("[PASS] test_framing_crlf_multiframe_and_overflow\n");
 }
 
 static void test_timeout_and_epipe(void)
 {
     int sv[2] = {-1, -1};
-    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
-    assert(lib_set_nonblock(sv[0]) == 0);
-    assert(lib_set_nonblock(sv[1]) == 0);
+    TEST_ASSERT_EQUAL_INT(0, socketpair(AF_UNIX, SOCK_STREAM, 0, sv));
+    TEST_ASSERT_EQUAL_INT(0, lib_set_nonblock(sv[0]));
+    TEST_ASSERT_EQUAL_INT(0, lib_set_nonblock(sv[1]));
 
     lib_buf_t rbuf;
-    assert(lib_buf_init(&rbuf, 64, 1024) == LIB_BUF_OK);
+    TEST_ASSERT_EQUAL_INT(LIB_BUF_OK, lib_buf_init(&rbuf, 64, 1024));
 
     char *line = NULL;
     int64_t short_deadline = lib_mono_ms() + 120;
     lib_io_status_t st = lib_io_read_line(sv[0], &rbuf, &line, short_deadline);
-    assert(st == LIB_IO_TIMEOUT);
-    assert(line == NULL);
+    TEST_ASSERT_EQUAL_INT(LIB_IO_TIMEOUT, st);
+    TEST_ASSERT_NULL(line);
 
     lib_close_fd(&sv[0]);
     char *blob = malloc(256u * 1024u);
-    assert(blob != NULL);
+    TEST_ASSERT_NOT_NULL(blob);
     memset(blob, 'Z', 256u * 1024u);
 
     int eof_or_err = 0;
     for (int i = 0; i < 64; i++) {
-        lib_io_status_t wrc = lib_io_write_all(sv[1], blob, 256u * 1024u, lib_mono_ms() + 1000);
+        lib_io_status_t wrc = lib_io_write_all(sv[1], blob, 256u * 1024u,
+                                               lib_mono_ms() + 1000);
         if (wrc == LIB_IO_EOF || wrc == LIB_IO_ERR) {
             eof_or_err = 1;
             break;
         }
     }
-    assert(eof_or_err == 1);
+    TEST_ASSERT_EQUAL_INT(1, eof_or_err);
 
     free(blob);
     lib_buf_free(&rbuf);
     lib_close_fd(&sv[1]);
-
-    printf("[PASS] test_timeout_and_epipe\n");
 }
 
 /* Peer thread reads newline-delimited frames from arg->fd and echoes each back. */
@@ -342,15 +357,16 @@ static void test_high_concurrency_stress(void)
     for (int i = 0; i < IO_STRESS_WORKERS; i++) {
         args[i].worker_id = i;
         args[i].msgs_count = IO_STRESS_MSGS_PER_WR;
-        assert(pthread_create(&tids[i], NULL, stress_client_worker, &args[i]) == 0);
+        TEST_ASSERT_EQUAL_INT(0, pthread_create(&tids[i], NULL, stress_client_worker, &args[i]));
     }
 
     uint64_t total_sent = 0;
     uint64_t total_recv = 0;
     for (int i = 0; i < IO_STRESS_WORKERS; i++) {
-        assert(pthread_join(tids[i], NULL) == 0);
-        assert(args[i].failed == 0);
-        assert(args[i].bytes_sent == args[i].bytes_recv);
+        TEST_ASSERT_EQUAL_INT(0, pthread_join(tids[i], NULL));
+        TEST_ASSERT_EQUAL_INT(0, args[i].failed);
+        TEST_ASSERT_EQUAL_UINT64((uint64_t)args[i].bytes_sent,
+                                 (uint64_t)args[i].bytes_recv);
         total_sent += args[i].bytes_sent;
         total_recv += args[i].bytes_recv;
     }
@@ -360,8 +376,7 @@ static void test_high_concurrency_stress(void)
         elapsed_ms = 1;
     }
 
-    printf("[PASS] test_high_concurrency_stress (workers=%d, msgs_per_worker=%d, "
-           "total_bytes=%llu, elapsed=%lld ms)\n",
+    printf("  [stress] workers=%d, msgs_per_worker=%d, total_bytes=%llu, elapsed=%lld ms\n",
            IO_STRESS_WORKERS,
            IO_STRESS_MSGS_PER_WR,
            (unsigned long long)(total_sent + total_recv),
@@ -370,10 +385,10 @@ static void test_high_concurrency_stress(void)
 
 int main(void)
 {
-    test_buf_and_io_args();
-    test_framing_crlf_multiframe_and_overflow();
-    test_timeout_and_epipe();
-    test_high_concurrency_stress();
-    printf("All lib_io industrial tests passed.\n");
-    return 0;
+    UNITY_BEGIN();
+    RUN_TEST(test_buf_and_io_args);
+    RUN_TEST(test_framing_crlf_multiframe_and_overflow);
+    RUN_TEST(test_timeout_and_epipe);
+    RUN_TEST(test_high_concurrency_stress);
+    return UNITY_END();
 }

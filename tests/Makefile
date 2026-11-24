@@ -2,60 +2,88 @@ CC         ?= gcc
 BUILD_DIR  ?= $(abspath ../build)
 INC_DIR    ?= $(abspath ../include)
 SRC_DIR    ?= $(abspath ../src)
-STATIC_LIB ?= $(BUILD_DIR)/libmcp.a
+STATIC_LIB ?= $(BUILD_DIR)/libagent.a
 
+TEST_DIR       := .
+UNITY_DIR      := $(TEST_DIR)
+UNITY_SRC      := $(UNITY_DIR)/unity.c
 TEST_BUILD_DIR := $(BUILD_DIR)/test
 
-CPPFLAGS := -D_POSIX_C_SOURCE=200809L -I$(INC_DIR) -I$(SRC_DIR)
+TLS ?= 0
+
+CPPFLAGS += -D_GNU_SOURCE -I$(INC_DIR) -I$(SRC_DIR) -I$(UNITY_DIR)
 CFLAGS   ?= -std=c11 -O2 -Wall -Wextra -Werror
 DEPFLAGS  = -MMD -MP
 LDFLAGS  ?=
-LDLIBS   ?= -lm -lpthread
+LDLIBS   += -lm -lpthread
+
+ifeq ($(TLS),1)
+	CPPFLAGS += -DMG_TLS=MG_TLS_OPENSSL
+	LDLIBS   += -lssl -lcrypto
+endif
 
 ASAN_FLAGS ?= -fsanitize=address,undefined -fno-omit-frame-pointer -g
 
-MCP_TEST_SRC  := test_lib_mcp.c
-MCP_TEST_OBJ  := $(TEST_BUILD_DIR)/test_lib_mcp.o
-MCP_TEST_BIN  := $(TEST_BUILD_DIR)/test_lib_mcp
-MCP_ASAN_BIN  := $(TEST_BUILD_DIR)/test_lib_mcp_asan
+# Automatically collect all test_*.c files under tests/
+TEST_SRCS  := $(sort $(wildcard $(TEST_DIR)/test_*.c))
+TEST_NAMES := $(basename $(notdir $(TEST_SRCS)))
 
-IO_TEST_SRC   := test_lib_io.c
-IO_TEST_OBJ   := $(TEST_BUILD_DIR)/test_lib_io.o
-IO_TEST_BIN   := $(TEST_BUILD_DIR)/test_lib_io
-IO_ASAN_BIN   := $(TEST_BUILD_DIR)/test_lib_io_asan
+TEST_OBJS := $(patsubst %,$(TEST_BUILD_DIR)/%.o,$(TEST_NAMES))
+TEST_BINS := $(patsubst %,$(TEST_BUILD_DIR)/%,$(TEST_NAMES))
+ASAN_BINS := $(patsubst %,$(TEST_BUILD_DIR)/%_asan,$(TEST_NAMES))
 
-LIB_SRCS := $(wildcard $(SRC_DIR)/*.c)
-DEPS     := $(MCP_TEST_OBJ:.o=.d) $(IO_TEST_OBJ:.o=.d)
+UNITY_OBJ      := $(TEST_BUILD_DIR)/unity.o
+UNITY_ASAN_OBJ := $(TEST_BUILD_DIR)/unity_asan.o
 
-.PHONY: build run asan clean
+# Exclude standalone entrypoints like main.c if any exist in src/
+LIB_SRCS      := $(filter-out %/main.c,$(sort $(wildcard $(SRC_DIR)/*.c)))
+LIB_ASAN_OBJS := $(patsubst $(SRC_DIR)/%.c,$(TEST_BUILD_DIR)/asan_objs/%.o,$(LIB_SRCS))
+ASAN_LIB      := $(TEST_BUILD_DIR)/libagent_asan.a
 
-build: $(MCP_TEST_BIN) $(IO_TEST_BIN)
+DEPS := $(TEST_OBJS:.o=.d) $(UNITY_OBJ:.o=.d)
 
-$(MCP_TEST_OBJ): $(MCP_TEST_SRC) | $(TEST_BUILD_DIR)
+.DEFAULT_GOAL := build
+.PHONY: build run build-asan asan clean
+
+build: $(TEST_BINS)
+
+# Compile Unity framework separately without -Werror
+$(UNITY_OBJ): $(UNITY_SRC) | $(TEST_BUILD_DIR)
+	$(CC) $(CPPFLAGS) -std=c11 -O2 -Wall -Wextra $(DEPFLAGS) -c $< -o $@
+
+$(TEST_BUILD_DIR)/%.o: $(TEST_DIR)/%.c | $(TEST_BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
-$(MCP_TEST_BIN): $(MCP_TEST_OBJ) $(STATIC_LIB) | $(TEST_BUILD_DIR)
-	$(CC) $(CFLAGS) $(LDFLAGS) $< $(STATIC_LIB) $(LDLIBS) -o $@
-
-$(IO_TEST_OBJ): $(IO_TEST_SRC) | $(TEST_BUILD_DIR)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
-
-$(IO_TEST_BIN): $(IO_TEST_OBJ) $(STATIC_LIB) | $(TEST_BUILD_DIR)
-	$(CC) $(CFLAGS) $(LDFLAGS) $< $(STATIC_LIB) $(LDLIBS) -o $@
+$(TEST_BUILD_DIR)/%: $(TEST_BUILD_DIR)/%.o $(UNITY_OBJ) $(STATIC_LIB) | $(TEST_BUILD_DIR)
+	$(CC) $(CFLAGS) $(LDFLAGS) $< $(UNITY_OBJ) $(STATIC_LIB) $(LDLIBS) -o $@
 
 run: build
-	./$(MCP_TEST_BIN)
-	./$(IO_TEST_BIN)
+	@set -e; for bin in $(TEST_BINS); do \
+		"$$bin"; \
+	done
 
-asan: | $(TEST_BUILD_DIR)
-	$(CC) $(CPPFLAGS) -std=c11 -O1 -Wall -Wextra -Werror $(ASAN_FLAGS) \
-		$(LIB_SRCS) $(MCP_TEST_SRC) $(LDFLAGS) $(LDLIBS) -o $(MCP_ASAN_BIN)
-	$(CC) $(CPPFLAGS) -std=c11 -O1 -Wall -Wextra -Werror $(ASAN_FLAGS) \
-		$(LIB_SRCS) $(IO_TEST_SRC) $(LDFLAGS) $(LDLIBS) -o $(IO_ASAN_BIN)
-	./$(MCP_ASAN_BIN)
-	./$(IO_ASAN_BIN)
+# Build ASan/UBSan library and test binaries
+$(UNITY_ASAN_OBJ): $(UNITY_SRC) | $(TEST_BUILD_DIR)
+	$(CC) $(CPPFLAGS) -std=c11 -O1 -Wall -Wextra $(ASAN_FLAGS) -c $< -o $@
 
-$(TEST_BUILD_DIR):
+$(TEST_BUILD_DIR)/asan_objs/%.o: $(SRC_DIR)/%.c | $(TEST_BUILD_DIR)/asan_objs
+	$(CC) $(CPPFLAGS) -std=c11 -O1 -Wall -Wextra -Werror $(ASAN_FLAGS) -fPIC -c $< -o $@
+
+$(ASAN_LIB): $(LIB_ASAN_OBJS)
+	$(AR) rcs $@ $^
+
+$(TEST_BUILD_DIR)/%_asan: $(TEST_DIR)/%.c $(ASAN_LIB) $(UNITY_ASAN_OBJ) | $(TEST_BUILD_DIR)
+	$(CC) $(CPPFLAGS) -std=c11 -O1 -Wall -Wextra -Werror $(ASAN_FLAGS) \
+		$< $(ASAN_LIB) $(UNITY_ASAN_OBJ) $(LDFLAGS) $(LDLIBS) -o $@
+
+build-asan: $(ASAN_BINS)
+
+asan: build-asan
+	@set -e; for bin in $(ASAN_BINS); do \
+		"$$bin"; \
+	done
+
+$(TEST_BUILD_DIR) $(TEST_BUILD_DIR)/asan_objs:
 	mkdir -p $@
 
 -include $(DEPS)

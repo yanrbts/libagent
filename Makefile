@@ -1,7 +1,7 @@
 CC          ?= cc
 AR          ?= ar
 
-TARGET_NAME ?= mcp
+TARGET_NAME ?= agent
 BUILD_DIR   ?= build
 INC_DIR     ?= include
 SRC_DIR     ?= src
@@ -15,16 +15,10 @@ ABS_SRC_DIR   := $(abspath $(SRC_DIR))
 STATIC_LIB    := $(ABS_BUILD_DIR)/lib$(TARGET_NAME).a
 SHARED_LIB    := $(ABS_BUILD_DIR)/lib$(TARGET_NAME).so
 
-SRCS := \
-	$(ABS_SRC_DIR)/util.c \
-	$(ABS_SRC_DIR)/log.c \
-	$(ABS_SRC_DIR)/lib_buf.c \
-	$(ABS_SRC_DIR)/lib_io.c \
-	$(ABS_SRC_DIR)/lib_mcp.c \
-	$(ABS_SRC_DIR)/cJSON.c
+SRCS          := $(sort $(wildcard $(ABS_SRC_DIR)/*.c))
 
-STATIC_OBJS := $(patsubst $(ABS_SRC_DIR)/%.c,$(ABS_BUILD_DIR)/static/%.o,$(SRCS))
-SHARED_OBJS := $(patsubst $(ABS_SRC_DIR)/%.c,$(ABS_BUILD_DIR)/shared/%.o,$(SRCS))
+STATIC_OBJS   := $(patsubst $(ABS_SRC_DIR)/%.c,$(ABS_BUILD_DIR)/static/%.o,$(SRCS))
+SHARED_OBJS   := $(patsubst $(ABS_SRC_DIR)/%.c,$(ABS_BUILD_DIR)/shared/%.o,$(SRCS))
 
 CPPFLAGS      := -D_POSIX_C_SOURCE=200809L -I$(ABS_INC_DIR) -I$(ABS_SRC_DIR)
 CFLAGS        ?= -std=c11 -O2 -Wall -Wextra -Werror -fvisibility=hidden
@@ -35,7 +29,18 @@ SHARED_CFLAGS := $(CFLAGS) -fPIC
 LDFLAGS       ?=
 LDLIBS        ?= -lm -lpthread
 
+TLS ?= 0
+ifeq ($(TLS),1)
+	CPPFLAGS += -DMG_TLS=MG_TLS_OPENSSL
+	LDLIBS   += -lssl -lcrypto
+endif
+
+export CPPFLAGS CFLAGS LDLIBS
+
 ASAN_FLAGS    := -fsanitize=address,undefined -fno-omit-frame-pointer -g
+
+MONGOOSE_STATIC_OBJ := $(ABS_BUILD_DIR)/static/mongoose.o
+MONGOOSE_SHARED_OBJ := $(ABS_BUILD_DIR)/shared/mongoose.o
 
 SUBMAKE_ARGS := \
 	CC="$(CC)" \
@@ -62,6 +67,12 @@ $(STATIC_LIB): $(STATIC_OBJS) | $(ABS_BUILD_DIR)
 
 $(SHARED_LIB): $(SHARED_OBJS) | $(ABS_BUILD_DIR)
 	$(CC) -shared $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+$(MONGOOSE_STATIC_OBJ): CPPFLAGS += -D_GNU_SOURCE -D_DEFAULT_SOURCE -include alloca.h
+$(MONGOOSE_STATIC_OBJ): STATIC_CFLAGS := $(filter-out -Werror,$(STATIC_CFLAGS))
+
+$(MONGOOSE_SHARED_OBJ): CPPFLAGS += -D_GNU_SOURCE -D_DEFAULT_SOURCE -include alloca.h
+$(MONGOOSE_SHARED_OBJ): SHARED_CFLAGS := $(filter-out -Werror,$(SHARED_CFLAGS))
 
 $(ABS_BUILD_DIR)/static/%.o: $(ABS_SRC_DIR)/%.c | $(ABS_BUILD_DIR)/static
 	$(CC) $(CPPFLAGS) $(STATIC_CFLAGS) $(DEPFLAGS) -c $< -o $@
