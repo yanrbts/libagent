@@ -2,7 +2,7 @@ CC         ?= gcc
 BUILD_DIR  ?= $(abspath ../build)
 INC_DIR    ?= $(abspath ../include)
 SRC_DIR    ?= $(abspath ../src)
-STATIC_LIB ?= $(BUILD_DIR)/libmcp.a
+STATIC_LIB ?= $(BUILD_DIR)/libagent.a
 
 EX_BUILD_DIR := $(BUILD_DIR)/examples
 
@@ -14,27 +14,30 @@ LDLIBS   ?= -lm
 
 ASAN_FLAGS ?= -fsanitize=address,undefined -fno-omit-frame-pointer -g
 
-DEMO_SRC  := mcp_client_demo.c
-DEMO_OBJ  := $(EX_BUILD_DIR)/mcp_client_demo.o
-DEMO_BIN  := $(EX_BUILD_DIR)/mcp_client_demo
-DEMO_ASAN := $(EX_BUILD_DIR)/mcp_client_demo_asan
+SRCS      := $(wildcard *.c)
+TARGETS   := $(SRCS:.c=)
+OBJS      := $(patsubst %.c,$(EX_BUILD_DIR)/%.o,$(SRCS))
+BINS      := $(patsubst %,$(EX_BUILD_DIR)/%,$(TARGETS))
+ASAN_BINS := $(patsubst %,$(EX_BUILD_DIR)/%_asan,$(TARGETS))
+DEPS      := $(OBJS:.o=.d)
 
 LIB_SRCS  := $(wildcard $(SRC_DIR)/*.c)
-DEPS      := $(DEMO_OBJ:.o=.d)
 
 .PHONY: build asan clean
 
-build: $(DEMO_BIN)
+build: $(BINS)
 
-$(DEMO_OBJ): $(DEMO_SRC) | $(EX_BUILD_DIR)
+$(EX_BUILD_DIR)/%.o: %.c | $(EX_BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
-$(DEMO_BIN): $(DEMO_OBJ) $(STATIC_LIB) | $(EX_BUILD_DIR)
+$(EX_BUILD_DIR)/%: $(EX_BUILD_DIR)/%.o $(STATIC_LIB) | $(EX_BUILD_DIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) $< $(STATIC_LIB) $(LDLIBS) -o $@
 
-asan: | $(EX_BUILD_DIR)
+asan: $(ASAN_BINS)
+
+$(EX_BUILD_DIR)/%_asan: %.c $(LIB_SRCS) | $(EX_BUILD_DIR)
 	$(CC) $(CPPFLAGS) -std=c11 -O1 -Wall -Wextra -Werror $(ASAN_FLAGS) \
-		$(LIB_SRCS) $(DEMO_SRC) $(LDFLAGS) $(LDLIBS) -o $(DEMO_ASAN)
+		$(LIB_SRCS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
 $(EX_BUILD_DIR):
 	mkdir -p $@

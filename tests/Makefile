@@ -25,7 +25,7 @@ endif
 ASAN_FLAGS ?= -fsanitize=address,undefined -fno-omit-frame-pointer -g
 
 # Targets that define __wrap_malloc / __wrap_calloc
-MOCK_WRAP_TESTS := test_lib_llm_mock
+MOCK_WRAP_TESTS := test_lib_llm_mock test_lib_tool
 
 # Automatically collect all test_*.c files under tests/
 TEST_SRCS  := $(sort $(wildcard $(TEST_DIR)/test_*.c))
@@ -43,7 +43,10 @@ LIB_SRCS      := $(filter-out %/main.c,$(sort $(wildcard $(SRC_DIR)/*.c)))
 LIB_ASAN_OBJS := $(patsubst $(SRC_DIR)/%.c,$(TEST_BUILD_DIR)/asan_objs/%.o,$(LIB_SRCS))
 ASAN_LIB      := $(TEST_BUILD_DIR)/libagent_asan.a
 
-DEPS := $(TEST_OBJS:.o=.d) $(UNITY_OBJ:.o=.d)
+DEPS := $(TEST_OBJS:.o=.d) \
+        $(UNITY_OBJ:.o=.d) \
+        $(UNITY_ASAN_OBJ:.o=.d) \
+        $(LIB_ASAN_OBJS:.o=.d)
 
 # Target-specific linker wrap flags for mock OOM test binaries
 $(foreach t,$(MOCK_WRAP_TESTS),$(TEST_BUILD_DIR)/$(t)): \
@@ -74,10 +77,10 @@ run: build
 
 # Build ASan/UBSan library and test binaries
 $(UNITY_ASAN_OBJ): $(UNITY_SRC) | $(TEST_BUILD_DIR)
-	$(CC) $(CPPFLAGS) -std=c11 -O1 -Wall -Wextra $(ASAN_FLAGS) -c $< -o $@
+	$(CC) $(CPPFLAGS) -std=c11 -O1 -Wall -Wextra $(ASAN_FLAGS) $(DEPFLAGS) -c $< -o $@
 
 $(TEST_BUILD_DIR)/asan_objs/%.o: $(SRC_DIR)/%.c | $(TEST_BUILD_DIR)/asan_objs
-	$(CC) $(CPPFLAGS) -std=c11 -O1 -Wall -Wextra -Werror $(ASAN_FLAGS) -fPIC -c $< -o $@
+	$(CC) $(CPPFLAGS) -std=c11 -O1 -Wall -Wextra -Werror $(ASAN_FLAGS) $(DEPFLAGS) -fPIC -c $< -o $@
 
 $(ASAN_LIB): $(LIB_ASAN_OBJS)
 	$(AR) rcs $@ $^
