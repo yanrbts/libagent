@@ -24,6 +24,9 @@ endif
 
 ASAN_FLAGS ?= -fsanitize=address,undefined -fno-omit-frame-pointer -g
 
+# Targets that define __wrap_malloc / __wrap_calloc
+MOCK_WRAP_TESTS := test_lib_llm_mock
+
 # Automatically collect all test_*.c files under tests/
 TEST_SRCS  := $(sort $(wildcard $(TEST_DIR)/test_*.c))
 TEST_NAMES := $(basename $(notdir $(TEST_SRCS)))
@@ -41,6 +44,13 @@ LIB_ASAN_OBJS := $(patsubst $(SRC_DIR)/%.c,$(TEST_BUILD_DIR)/asan_objs/%.o,$(LIB
 ASAN_LIB      := $(TEST_BUILD_DIR)/libagent_asan.a
 
 DEPS := $(TEST_OBJS:.o=.d) $(UNITY_OBJ:.o=.d)
+
+# Target-specific linker wrap flags for mock OOM test binaries
+$(foreach t,$(MOCK_WRAP_TESTS),$(TEST_BUILD_DIR)/$(t)): \
+	LDFLAGS += -Wl,--wrap=malloc -Wl,--wrap=calloc
+
+$(foreach t,$(MOCK_WRAP_TESTS),$(TEST_BUILD_DIR)/$(t)_asan): \
+	LDFLAGS += -Wl,--wrap=malloc -Wl,--wrap=calloc
 
 .DEFAULT_GOAL := build
 .PHONY: build run build-asan asan clean

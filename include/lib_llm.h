@@ -15,6 +15,22 @@
 extern "C" {
 #endif
 
+/**
+ * OpenAI-compatible Chat Completions client (non-streaming).
+ *
+ * Threading: one lib_llm_ctx_t must not be used concurrently from multiple
+ * threads without external synchronization (last_err is written on the ctx).
+ *
+ * Memory:
+ *   - Request side (lib_llm_msg_t / lib_llm_tool_def_t): all pointers are
+ *     borrowed; the library never frees them.
+ *   - Response side (lib_llm_res_t): all heap fields are owned by the library;
+ *     always call lib_llm_free_res() after lib_llm_chat(), including on failure
+ *     if out_res was partially filled (lib_llm_chat clears it on entry and
+ *     frees on parse failure).
+ *   - Transport post(): on success must malloc *out_body; lib_llm_chat frees it.
+ */
+
 typedef enum {
     LIB_LLM_OK          = 0,
     LIB_LLM_ERR_ARG     = -1,
@@ -33,146 +49,175 @@ typedef enum {
     LIB_LLM_ROLE_TOOL      = 3
 } lib_llm_role_t;
 
+/**
+ * Transport POST hook.
+ * Return LIB_LLM_OK when HTTP status/body were obtained (including non-2xx).
+ * Return LIB_LLM_ERR_* on transport/timeout/memory failure before a usable response.
+ * On LIB_LLM_OK, *out_body is malloc'd (or NULL if empty) and owned by caller.
+ */
+typedef lib_llm_err_t (*lib_llm_post_fn)(void *io_ctx,
+                                         const char *url,
+                                         const char *api_key,
+                                         const char *body_json,
+                                         size_t body_len,
+                                         int timeout_ms,
+                                         size_t max_resp_sz,
+                                         char **out_body,
+                                         size_t *out_len,
+                                         int *out_status,
+                                         char *errbuf,
+                                         size_t errlen);
+
+typedef struct lib_llm_io {
+    lib_llm_post_fn post; /* required */
+    void           *ctx;  /* opaque, owned by caller */
+} lib_llm_io_t;
+
 typedef struct lib_llm_ctx lib_llm_ctx_t;
 
 typedef struct lib_llm_cfg {
-    const char *endpoint;     /* Base or full chat completions URL (e.g. http://127.0.0.1:11434/v1/chat/completions) */
-    const char *api_key;      /* Optional bearer token; NULL or empty omits Authorization header */
-    const char *model;        /* Target model identifier string */
-    int         timeout_ms;   /* Per-request timeout in milliseconds */
-    size_t      max_resp_sz;  /* Maximum allowed HTTP response payload size in bytes */
-    double      temperature;  /* Sampling temperature; negative leaves server default */
-    int         max_tokens;   /* Maximum completion tokens; zero or negative leaves server default */
+    lib_llm_io_t io;
+    const char  *endpoint;    /* required */
+    const char  *api_key;     /* optional; NULL/empty => no Authorization */
+    const char  *model;       /* required */
+    int          timeout_ms;  /* <=0 => default */
+    size_t       max_resp_sz; /* 0 => default */
+    double       temperature; /* <0 => omit field */
+    int          max_tokens;  /* <=0 => omit field */
 } lib_llm_cfg_t;
 
 typedef struct lib_llm_tool_call {
-    char *id;                 /* Provider tool call identifier required for tool result correlation */
-    char *name;               /* Requested function or tool name */
-    char *args_json;          /* Serialized JSON arguments string */
+    char *id;
+    char *name;
+    char *args_json;
 } lib_llm_tool_call_t;
 
 typedef struct lib_llm_msg {
-    lib_llm_role_t       role;         /* Message participant role */
-    const char          *content;      /* UTF-8 text content or NULL if tool-call-only assistant turn */
-    const char          *tool_call_id; /* Target tool_call.id when role is LIB_LLM_ROLE_TOOL */
-    const char          *name;         /* Optional tool or sender name */
-    lib_llm_tool_call_t *tool_calls;   /* Array of tool invocations requested by assistant or NULL */
-    size_t               tool_count;   /* Number of elements in tool_calls */
+    lib_llm_role_t       role;
+    const char          *content;
+    const char          *tool_call_id; /* required when role == TOOL */
+    const char          *name;
+    lib_llm_tool_call_t *tool_calls;   /* borrowed; assistant tool turns */
+    size_t               tool_count;
 } lib_llm_msg_t;
 
 typedef struct lib_llm_tool_def {
-    const char *name;         /* Unique function or tool name exposed to the model */
-    const char *description;  /* Optional human-readable tool purpose description */
-    const char *schema_json;  /* Serialized JSON Schema object describing arguments; NULL defaults to {} */
+    const char *name;          /* required */
+    const char *description;   /* optional */
+    const char *schema_json;   /* JSON object string; NULL => {} */
 } lib_llm_tool_def_t;
 
 typedef struct lib_llm_usage {
-    int64_t prompt_tokens;     /* Input tokens consumed by prompt and tools */
-    int64_t completion_tokens; /* Output tokens generated by the model */
-    int64_t total_tokens;      /* Total tokens accounted for the request */
+    int64_t prompt_tokens;
+    int64_t completion_tokens;
+    int64_t total_tokens;
 } lib_llm_usage_t;
 
 typedef struct lib_llm_res {
-    char                *text;          /* Assistant text reply or NULL when none returned */
-    char                *finish_reason; /* Completion stop reason (e.g. "stop", "tool_calls") or NULL */
-    char                *raw_json;      /* Serialized raw response JSON payload */
-    lib_llm_tool_call_t *tool_calls;    /* Array of tool calls emitted by model or NULL */
-    size_t               tool_count;    /* Number of elements in tool_calls */
-    lib_llm_usage_t      usage;         /* Token accounting metrics for the turn */
+    char                *text;
+    char                *finish_reason;
+    char                *raw_json;
+    lib_llm_tool_call_t *tool_calls;
+    size_t               tool_count;
+    lib_llm_usage_t      usage;
 } lib_llm_res_t;
 
-/*
-- Allocates and initializes an LLM client context from cfg.
+/**
+ * Allocate and initialize an LLM client context from a configuration snapshot.
  *
-- Parameters:
--   cfg    - Non-NULL client configuration specifying endpoint and model.
--   errbuf - Optional caller buffer receiving formatted diagnostic messages.
--   errlen - Capacity of errbuf in bytes including terminating NUL.
+ * Deep-copies configuration strings and normalizes defaults (such as timeout
+ * and response size limits) so the caller may safely modify or stack-dispose
+ * cfg after return.
  *
-- Return:
--   Initialized lib_llm_ctx_t pointer on success, or NULL on failure.
+ * @param cfg     Configuration snapshot; must not be NULL, and cfg->io.post,
+ *                cfg->endpoint, and cfg->model must be non-NULL and non-empty.
+ * @param errbuf  Optional buffer receiving a formatted error message on failure.
+ * @param errlen  Capacity of errbuf in bytes; ignored if errbuf is NULL or 0.
+ *
+ * @return Initialized context pointer on success, or NULL on invalid input or
+ *         memory allocation failure.
  */
-LIBAGENT_API lib_llm_ctx_t *lib_llm_open(const lib_llm_cfg_t *cfg, char *errbuf, size_t errlen);
+LIBAGENT_API lib_llm_ctx_t *lib_llm_open(const lib_llm_cfg_t *cfg,
+                                         char *errbuf, size_t errlen);
 
-/*
-- Releases all resources owned by ctx and invalidates the handle.
+/**
+ * Destroy an LLM client context and release all owned resources.
  *
-- Parameters:
--   ctx - Client context returned by lib_llm_open(); NULL is a no-op.
+ * Safe to call with NULL. Does not close or free caller-owned transport state
+ * referenced via cfg.io.ctx.
  *
-- Return:
--   None.
+ * @param ctx  Context handle created by lib_llm_open(), or NULL.
  */
 LIBAGENT_API void lib_llm_close(lib_llm_ctx_t *ctx);
 
-/*
-- Executes a single chat completion turn with optional tool definitions
-- and populates out_res. Caller must release out_res via lib_llm_free_res().
+/**
+ * Execute a synchronous chat completion request with optional tool definitions.
  *
-- Parameters:
--   ctx        - Active LLM client context handle.
--   msgs       - Non-empty array of conversation messages.
--   msg_count  - Number of elements in msgs.
--   tools      - Optional array of callable tool definitions; NULL if none.
--   tool_count - Number of elements in tools.
--   out_res    - Non-NULL output structure receiving model response data.
--   errbuf     - Optional caller buffer receiving formatted diagnostic messages.
--   errlen     - Capacity of errbuf in bytes including terminating NUL.
+ * Serializes msgs and tools into a chat-completions JSON payload, invokes the
+ * configured transport callback, and parses the response into out_res. On
+ * failure, out_res is reset to a clean zeroed state.
  *
-- Return:
--   LIB_LLM_OK on success, or a negative lib_llm_err_t code on failure.
+ * @param ctx         Initialized LLM client context; must not be NULL.
+ * @param msgs        Array of conversation messages; must not be NULL.
+ * @param msg_count   Number of elements in msgs; must be greater than 0.
+ * @param tools       Optional array of callable tool definitions; may be NULL
+ *                    when tool_count is 0.
+ * @param tool_count  Number of elements in tools.
+ * @param out_res     Output response structure populated on success and zeroed
+ *                    on error; must not be NULL.
+ * @param errbuf      Optional buffer receiving a formatted error message on failure.
+ * @param errlen      Capacity of errbuf in bytes; ignored if errbuf is NULL or 0.
+ *
+ * @return LIB_LLM_OK on success, or a negative lib_llm_err_t error code on
+ *         failure.
  */
-LIBAGENT_API lib_llm_err_t lib_llm_chat(lib_llm_ctx_t *ctx,
-                                        const lib_llm_msg_t *msgs,
-                                        size_t msg_count,
-                                        const lib_llm_tool_def_t *tools,
-                                        size_t tool_count,
-                                        lib_llm_res_t *out_res,
-                                        char *errbuf,
-                                        size_t errlen);
+LIBAGENT_API lib_llm_err_t  lib_llm_chat(lib_llm_ctx_t *ctx,
+                                         const lib_llm_msg_t *msgs,
+                                         size_t msg_count,
+                                         const lib_llm_tool_def_t *tools,
+                                         size_t tool_count,
+                                         lib_llm_res_t *out_res,
+                                         char *errbuf,
+                                         size_t errlen);
 
-/*
-- Releases all heap buffers owned by res and zeroes the structure.
+/**
+ * Release all heap buffers owned by a response structure and zero its fields.
  *
-- Parameters:
--   res - Response structure to clean up; NULL is allowed.
+ * Safe to call with NULL or an already zero-initialized/freed structure.
  *
-- Return:
--   None.
+ * @param res  Response structure to clean up, or NULL.
  */
 LIBAGENT_API void lib_llm_free_res(lib_llm_res_t *res);
 
-/*
-- Releases all heap buffers owned by an array of tool calls and frees the array.
+/**
+ * Release an array of tool_call entries and the array buffer itself.
  *
-- Parameters:
--   calls - Tool call array to release; NULL is allowed.
--   count - Number of elements contained in calls.
+ * Safe to call with NULL calls or count == 0.
  *
-- Return:
--   None.
+ * @param calls  Heap-allocated array of tool calls, or NULL.
+ * @param count  Number of initialized elements in calls.
  */
 LIBAGENT_API void lib_llm_free_calls(lib_llm_tool_call_t *calls, size_t count);
 
-/*
-- Returns the latest diagnostic error message recorded on ctx, or an empty string.
+/**
+ * Return the last diagnostic error message recorded on ctx.
  *
-- Parameters:
--   ctx - Client context handle; NULL returns "".
+ * Returns an empty string if ctx is NULL or no error has occurred. The
+ * returned pointer remains valid until the next operation on ctx or
+ * lib_llm_close().
  *
-- Return:
--   Null-terminated diagnostic string owned by ctx.
+ * @param ctx  Context handle to query, or NULL.
+ *
+ * @return NUL-terminated error string (never NULL).
  */
 LIBAGENT_API const char *lib_llm_errstr(const lib_llm_ctx_t *ctx);
 
-/*
-- Maps an error code to a static human-readable description.
+/**
+ * Return a static human-readable description for a lib_llm_err_t status code.
  *
-- Parameters:
--   err - Error code returned by a lib_llm_* function.
+ * @param err  Error status code to describe.
  *
-- Return:
--   Constant null-terminated string; never NULL.
+ * @return NUL-terminated static description string (never NULL).
  */
 LIBAGENT_API const char *lib_llm_strerror(lib_llm_err_t err);
 

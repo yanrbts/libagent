@@ -143,19 +143,6 @@ static int http_valid_url(const char *url)
     return 1;
 }
 
-static char *http_strndup_safe(const char *src, size_t len)
-{
-    char *p = (char *)malloc(len + 1u);
-    if (p == NULL) {
-        return NULL;
-    }
-    if (len > 0u && src != NULL) {
-        memcpy(p, src, len);
-    }
-    p[len] = '\0';
-    return p;
-}
-
 static int http_store_body(http_run_state_t *st, const char *data, size_t len)
 {
     if (len > st->max_resp_sz) {
@@ -214,8 +201,8 @@ static int http_store_headers(http_run_state_t *st, const struct mg_http_message
     for (size_t i = 0; i < cap_cnt; i++) {
         const struct mg_str *hn = &hm->headers[i].name;
         const struct mg_str *hv = &hm->headers[i].value;
-        char *k = http_strndup_safe(hn->buf, hn->len);
-        char *v = http_strndup_safe(hv->buf, hv->len);
+        char *k = lib_strndup_ex(hn->buf, hn->len, NULL);
+        char *v = lib_strndup_ex(hv->buf, hv->len, NULL);
         if (k == NULL || v == NULL) {
             free(k);
             free(v);
