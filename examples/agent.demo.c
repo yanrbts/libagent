@@ -1,11 +1,12 @@
 /**
  * Copyright (c) 2026 yanrbts
  *
- * Runnable agent example wired with lib_http, lib_llm, lib_tool,
+ * Runnable agent example wired with lib_error, lib_http, lib_llm, lib_tool,
  * and lib_agent against a local Ollama endpoint.
  */
 
 #include "lib_agent.h"
+#include "lib_error.h"
 #include "lib_http.h"
 #include "lib_llm.h"
 #include "lib_tool.h"
@@ -40,6 +41,29 @@ typedef struct demo_ctx {
     char                 final_reply[4096];
 } demo_ctx_t;
 
+static void app_error_log_sink(const lib_err_t *err, void *userdata)
+{
+    FILE *out = stderr;
+
+    (void)userdata;
+    if (err == NULL) {
+        return;
+    }
+
+    if (err->severity == LIB_ERR_SEV_WARN) {
+        out = stdout;
+    }
+
+    (void)fprintf(out, "[%s][%s:%s] retry=%d errno=%d status=%d %s\n",
+                  lib_err_severity_str(err->severity),
+                  lib_err_domain_str(err->domain),
+                  lib_err_code_str(err->code),
+                  err->retryable,
+                  err->sys_errno,
+                  err->status_code,
+                  err->msg);
+}
+
 static void demo_free_call_array(lib_llm_tool_call_t *calls, size_t cnt)
 {
     size_t i = 0u;
@@ -67,6 +91,8 @@ static lib_llm_tool_call_t *demo_dup_call_array(const lib_llm_tool_call_t *src, 
 
     dst = (lib_llm_tool_call_t *)calloc(cnt, sizeof(*dst));
     if (lib_unlikely(dst == NULL)) {
+        lib_err_emit_msg(LIB_ERR_DOM_AGENT, LIB_ERR_NOMEM,
+                         "failed to allocate tool call array");
         return NULL;
     }
 
@@ -118,9 +144,7 @@ static int demo_add_msg(demo_ctx_t                *ctx,
                         const char                *tool_call_id,
                         const char                *name,
                         const lib_llm_tool_call_t *calls,
-                        size_t                     call_cnt,
-                        char                      *errbuf,
-                        size_t                     errlen)
+                        size_t                     call_cnt)
 {
     demo_msg_item_t *item = NULL;
     int              oom  = 0;
@@ -129,9 +153,9 @@ static int demo_add_msg(demo_ctx_t                *ctx,
         return -1;
     }
     if (lib_unlikely(ctx->hist_cnt >= DEMO_MAX_MSGS)) {
-        if (errbuf != NULL && errlen > 0u) {
-            (void)snprintf(errbuf, errlen, "message history reached max capacity");
-        }
+        lib_err_emit_msg(LIB_ERR_DOM_AGENT, LIB_ERR_STATE,
+                         "message history reached max capacity (%u)",
+                         (unsigned)DEMO_MAX_MSGS);
         return -1;
     }
 
@@ -183,15 +207,12 @@ static lib_llm_err_t demo_llm_post_cb(void          *io_ctx,
                                       size_t         max_resp_sz,
                                       char         **out_body,
                                       size_t        *out_len,
-                                      int           *out_status,
-                                      char          *errbuf,
-                                      size_t         errlen)
+                                      int           *out_status)
 {
     lib_http_ctx_t *http = (lib_http_ctx_t *)io_ctx;
     lib_http_res_t  hres;
     lib_http_err_t  hrc  = LIB_HTTP_OK;
     char           *copy = NULL;
-    int             oom  = 0;
 
     (void)body_len;
     (void)max_resp_sz;
@@ -199,6 +220,8 @@ static lib_llm_err_t demo_llm_post_cb(void          *io_ctx,
     memset(&hres, 0, sizeof(hres));
 
     if (lib_unlikely(http == NULL || out_body == NULL || out_len == NULL || out_status == NULL)) {
+        lib_err_emit_msg(LIB_ERR_DOM_LLM, LIB_ERR_INVALID_ARG,
+                         "invalid arguments in demo_llm_post_cb");
         return LIB_LLM_ERR_ARG;
     }
 
@@ -206,7 +229,7 @@ static lib_llm_err_t demo_llm_post_cb(void          *io_ctx,
     *out_len    = 0u;
     *out_status = 0;
 
-    hrc = lib_http_post_json(http, url, api_key, body_json, timeout_ms, &hres, errbuf, errlen);
+    hrc = lib_http_post_json(http, url, api_key, body_json, timeout_ms, &hres);
     if (lib_unlikely(hrc != LIB_HTTP_OK)) {
         lib_http_free_res(&hres);
         if (hrc == LIB_HTTP_ERR_TIMEOUT) {
@@ -223,7 +246,8 @@ static lib_llm_err_t demo_llm_post_cb(void          *io_ctx,
         copy = (char *)malloc(hres.body_len + 1u);
         if (lib_unlikely(copy == NULL)) {
             lib_http_free_res(&hres);
-            (void)oom;
+            lib_err_emit_msg(LIB_ERR_DOM_LLM, LIB_ERR_NOMEM,
+                             "failed to copy HTTP response body");
             return LIB_LLM_ERR_MEM;
         }
         memcpy(copy, hres.body, hres.body_len);
@@ -238,19 +262,17 @@ static lib_llm_err_t demo_llm_post_cb(void          *io_ctx,
 
 static lib_tool_err_t demo_tool_host_status(const lib_tool_call_t *call,
                                             void                  *tool_ctx,
-                                            lib_tool_res_t        *out_res,
-                                            char                  *errbuf,
-                                            size_t                 errlen)
+                                            lib_tool_res_t        *out_res)
 {
     int   oom = 0;
     char *buf = NULL;
 
     (void)call;
     (void)tool_ctx;
-    (void)errbuf;
-    (void)errlen;
 
     if (lib_unlikely(out_res == NULL)) {
+        lib_err_emit_msg(LIB_ERR_DOM_TOOL, LIB_ERR_INVALID_ARG,
+                         "host_status out_res must not be NULL");
         return LIB_TOOL_ERR_ARG;
     }
 
@@ -266,9 +288,7 @@ static lib_tool_err_t demo_tool_host_status(const lib_tool_call_t *call,
 
 static lib_tool_err_t demo_tool_add(const lib_tool_call_t *call,
                                     void                  *tool_ctx,
-                                    lib_tool_res_t        *out_res,
-                                    char                  *errbuf,
-                                    size_t                 errlen)
+                                    lib_tool_res_t        *out_res)
 {
     cJSON *root = NULL;
     cJSON *ja   = NULL;
@@ -278,15 +298,17 @@ static lib_tool_err_t demo_tool_add(const lib_tool_call_t *call,
     char  *res  = NULL;
 
     (void)tool_ctx;
-    (void)errbuf;
-    (void)errlen;
 
     if (lib_unlikely(call == NULL || out_res == NULL)) {
+        lib_err_emit_msg(LIB_ERR_DOM_TOOL, LIB_ERR_INVALID_ARG,
+                         "add tool received NULL argument");
         return LIB_TOOL_ERR_ARG;
     }
 
     root = cJSON_Parse(call->args_json != NULL ? call->args_json : "{}");
     if (lib_unlikely(root == NULL)) {
+        lib_err_emit_msg(LIB_ERR_DOM_TOOL, LIB_ERR_PROTOCOL,
+                         "add tool received invalid JSON arguments");
         res = lib_strdup_ex("{\"error\":\"invalid json arguments\"}", &oom);
         if (lib_unlikely(oom || res == NULL)) {
             return LIB_TOOL_ERR_MEM;
@@ -300,6 +322,8 @@ static lib_tool_err_t demo_tool_add(const lib_tool_call_t *call,
     jb = cJSON_GetObjectItemCaseSensitive(root, "b");
     if (lib_unlikely(!cJSON_IsNumber(ja) || !cJSON_IsNumber(jb))) {
         cJSON_Delete(root);
+        lib_err_emit_msg(LIB_ERR_DOM_TOOL, LIB_ERR_INVALID_ARG,
+                         "add tool requires numeric fields 'a' and 'b'");
         res = lib_strdup_ex("{\"error\":\"a and b must be numbers\"}", &oom);
         if (lib_unlikely(oom || res == NULL)) {
             return LIB_TOOL_ERR_MEM;
@@ -325,18 +349,16 @@ static lib_tool_err_t demo_tool_add(const lib_tool_call_t *call,
 static lib_agent_err_t demo_on_llm(void                  *user_ctx,
                                    const char            *agent_name,
                                    size_t                 step_idx,
-                                   lib_agent_turn_kind_t *out_kind,
-                                   char                  *errbuf,
-                                   size_t                 errlen)
+                                   lib_agent_turn_kind_t *out_kind)
 {
-    demo_ctx_t         *ctx      = (demo_ctx_t *)user_ctx;
-    lib_llm_msg_t      *msgs     = NULL;
-    lib_llm_tool_def_t *defs     = NULL;
-    size_t              def_cnt  = 0u;
+    demo_ctx_t         *ctx     = (demo_ctx_t *)user_ctx;
+    lib_llm_msg_t      *msgs    = NULL;
+    lib_llm_tool_def_t *defs    = NULL;
+    size_t              def_cnt = 0u;
     lib_llm_res_t       res;
-    lib_tool_err_t      trc      = LIB_TOOL_OK;
-    lib_llm_err_t       lrc      = LIB_LLM_OK;
-    size_t              i        = 0u;
+    lib_tool_err_t      trc     = LIB_TOOL_OK;
+    lib_llm_err_t       lrc     = LIB_LLM_OK;
+    size_t              i       = 0u;
 
     (void)agent_name;
     (void)step_idx;
@@ -344,6 +366,8 @@ static lib_agent_err_t demo_on_llm(void                  *user_ctx,
     memset(&res, 0, sizeof(res));
 
     if (lib_unlikely(ctx == NULL || ctx->llm == NULL || ctx->tools == NULL || out_kind == NULL)) {
+        lib_err_emit_msg(LIB_ERR_DOM_AGENT, LIB_ERR_INVALID_ARG,
+                         "demo_on_llm received NULL context or output pointer");
         return LIB_AGENT_ERR_ARG;
     }
 
@@ -354,11 +378,15 @@ static lib_agent_err_t demo_on_llm(void                  *user_ctx,
     }
 
     if (lib_unlikely(ctx->hist_cnt == 0u)) {
+        lib_err_emit_msg(LIB_ERR_DOM_AGENT, LIB_ERR_STATE,
+                         "demo_on_llm invoked with empty message history");
         return LIB_AGENT_ERR_STATE;
     }
 
     msgs = (lib_llm_msg_t *)calloc(ctx->hist_cnt, sizeof(*msgs));
     if (lib_unlikely(msgs == NULL)) {
+        lib_err_emit_msg(LIB_ERR_DOM_AGENT, LIB_ERR_NOMEM,
+                         "failed to allocate LLM message array");
         return LIB_AGENT_ERR_MEM;
     }
 
@@ -371,29 +399,46 @@ static lib_agent_err_t demo_on_llm(void                  *user_ctx,
         msgs[i].tool_count   = ctx->history[i].tool_count;
     }
 
-    trc = lib_tool_llm_defs(ctx->tools, &defs, &def_cnt, errbuf, errlen);
+    trc = lib_tool_llm_defs(ctx->tools, &defs, &def_cnt);
     if (lib_unlikely(trc != LIB_TOOL_OK)) {
         free(msgs);
         return LIB_AGENT_ERR_LLM;
     }
 
-    lrc = lib_llm_chat(ctx->llm, msgs, ctx->hist_cnt, defs, def_cnt, &res, errbuf, errlen);
+    lrc = lib_llm_chat(ctx->llm, msgs, ctx->hist_cnt, defs, def_cnt, &res);
     lib_tool_free_defs(defs, def_cnt);
     free(msgs);
 
     if (lib_unlikely(lrc != LIB_LLM_OK)) {
-        if (errbuf != NULL && errlen > 0u && errbuf[0] == '\0') {
-            (void)snprintf(errbuf, errlen, "%s: %s",
-                           lib_llm_strerror(lrc), lib_llm_errstr(ctx->llm));
-        }
         lib_llm_free_res(&res);
         return LIB_AGENT_ERR_LLM;
     }
 
     if (res.tool_calls != NULL && res.tool_count > 0u) {
+        char   names_buf[256];
+        size_t pos = 0u;
+        size_t k   = 0u;
+
+        names_buf[0] = '\0';
+        for (k = 0u; k < res.tool_count; k++) {
+            const char *tname = (res.tool_calls[k].name != NULL &&
+                                 res.tool_calls[k].name[0] != '\0')
+                                    ? res.tool_calls[k].name
+                                    : "<unnamed>";
+            int n = snprintf(names_buf + pos, sizeof(names_buf) - pos,
+                             "%s%s", (k > 0u) ? ", " : "", tname);
+            if (n < 0 || (size_t)n >= sizeof(names_buf) - pos) {
+                break;
+            }
+            pos += (size_t)n;
+        }
+
+        lib_err_emit_msg(LIB_ERR_DOM_AGENT, LIB_ERR_OK,
+                         "demo_on_llm: tool_calls (%zu): [%s]",
+                         res.tool_count, names_buf);
+
         if (lib_unlikely(demo_add_msg(ctx, LIB_LLM_ROLE_ASSISTANT, res.text,
-                                      NULL, NULL, res.tool_calls, res.tool_count,
-                                      errbuf, errlen) != 0)) {
+                                      NULL, NULL, res.tool_calls, res.tool_count) != 0)) {
             lib_llm_free_res(&res);
             return LIB_AGENT_ERR_MEM;
         }
@@ -410,7 +455,7 @@ static lib_agent_err_t demo_on_llm(void                  *user_ctx,
     if (res.text != NULL) {
         (void)snprintf(ctx->final_reply, sizeof(ctx->final_reply), "%s", res.text);
         (void)demo_add_msg(ctx, LIB_LLM_ROLE_ASSISTANT, res.text,
-                           NULL, NULL, NULL, 0u, errbuf, errlen);
+                           NULL, NULL, NULL, 0u);
     }
     lib_llm_free_res(&res);
     *out_kind = LIB_AGENT_TURN_FINAL;
@@ -421,9 +466,7 @@ static lib_agent_err_t demo_on_tools(void       *user_ctx,
                                      const char *agent_name,
                                      size_t      step_idx,
                                      size_t     *out_calls,
-                                     size_t     *out_errors,
-                                     char       *errbuf,
-                                     size_t      errlen)
+                                     size_t     *out_errors)
 {
     demo_ctx_t    *ctx    = (demo_ctx_t *)user_ctx;
     size_t         i      = 0u;
@@ -435,6 +478,8 @@ static lib_agent_err_t demo_on_tools(void       *user_ctx,
 
     if (lib_unlikely(ctx == NULL || ctx->tools == NULL ||
                      out_calls == NULL || out_errors == NULL)) {
+        lib_err_emit_msg(LIB_ERR_DOM_AGENT, LIB_ERR_INVALID_ARG,
+                         "demo_on_tools received NULL pointer");
         return LIB_AGENT_ERR_ARG;
     }
 
@@ -443,8 +488,7 @@ static lib_agent_err_t demo_on_tools(void       *user_ctx,
         lib_tool_err_t trc = LIB_TOOL_OK;
 
         memset(&t_res, 0, sizeof(t_res));
-        trc = lib_tool_exec_call(ctx->tools, &ctx->pending_calls[i],
-                                 ctx, &t_res, errbuf, errlen);
+        trc = lib_tool_exec_call(ctx->tools, &ctx->pending_calls[i], ctx, &t_res);
         calls++;
 
         if (lib_unlikely(trc != LIB_TOOL_OK || t_res.is_error)) {
@@ -455,7 +499,7 @@ static lib_agent_err_t demo_on_tools(void       *user_ctx,
                                       t_res.content != NULL ? t_res.content : "{\"error\":\"no content\"}",
                                       ctx->pending_calls[i].id,
                                       ctx->pending_calls[i].name,
-                                      NULL, 0u, errbuf, errlen) != 0)) {
+                                      NULL, 0u) != 0)) {
             lib_tool_res_reset(&t_res);
             demo_free_call_array(ctx->pending_calls, ctx->pending_cnt);
             ctx->pending_calls = NULL;
@@ -481,12 +525,12 @@ static int demo_on_step(void                        *user_ctx,
 {
     (void)user_ctx;
     if (info != NULL) {
-        printf("[%s] step=%zu state=%s calls=%zu errs=%zu\n",
-               agent_name != NULL ? agent_name : "agent",
-               info->step_idx,
-               lib_agent_state_str(info->state),
-               info->tool_calls,
-               info->tool_errors);
+        (void)printf("[%s] step=%zu state=%s calls=%zu errs=%zu\n",
+                     agent_name != NULL ? agent_name : "agent",
+                     info->step_idx,
+                     lib_agent_state_str(info->state),
+                     info->tool_calls,
+                     info->tool_errors);
     }
     return 0;
 }
@@ -506,7 +550,7 @@ int main(int argc, char **argv)
     const char           *model    = DEMO_OLLAMA_MODEL;
     const char           *endpoint = DEMO_OLLAMA_URL;
     const char           *prompt   = "Check host status and compute 12 + 34.";
-    char                  errbuf[256];
+    const char           *env_str  = NULL;
 
     memset(&ctx, 0, sizeof(ctx));
     memset(&hcfg, 0, sizeof(hcfg));
@@ -515,13 +559,16 @@ int main(int argc, char **argv)
     memset(&acfg, 0, sizeof(acfg));
     memset(&aops, 0, sizeof(aops));
     memset(&info, 0, sizeof(info));
-    memset(errbuf, 0, sizeof(errbuf));
 
-    if (getenv("OLLAMA_MODEL") != NULL && getenv("OLLAMA_MODEL")[0] != '\0') {
-        model = getenv("OLLAMA_MODEL");
+    lib_err_set_log_sink(app_error_log_sink, NULL);
+
+    env_str = getenv("OLLAMA_MODEL");
+    if (env_str != NULL && env_str[0] != '\0') {
+        model = env_str;
     }
-    if (getenv("OLLAMA_URL") != NULL && getenv("OLLAMA_URL")[0] != '\0') {
-        endpoint = getenv("OLLAMA_URL");
+    env_str = getenv("OLLAMA_URL");
+    if (env_str != NULL && env_str[0] != '\0') {
+        endpoint = env_str;
     }
     if (argc > 1 && argv[1][0] != '\0') {
         model = argv[1];
@@ -531,9 +578,8 @@ int main(int argc, char **argv)
     }
 
     hcfg.timeout_ms = 30000;
-    ctx.http = lib_http_open(&hcfg, errbuf, sizeof(errbuf));
+    ctx.http = lib_http_open(&hcfg);
     if (lib_unlikely(ctx.http == NULL)) {
-        fprintf(stderr, "lib_http_open failed: %s\n", errbuf);
         return 1;
     }
 
@@ -544,16 +590,14 @@ int main(int argc, char **argv)
     lcfg.timeout_ms  = 30000;
     lcfg.temperature = 0.2;
 
-    ctx.llm = lib_llm_open(&lcfg, errbuf, sizeof(errbuf));
+    ctx.llm = lib_llm_open(&lcfg);
     if (lib_unlikely(ctx.llm == NULL)) {
-        fprintf(stderr, "lib_llm_open failed: %s\n", errbuf);
         lib_http_close(ctx.http);
         return 1;
     }
 
-    reg = lib_tool_new(errbuf, sizeof(errbuf));
+    reg = lib_tool_new();
     if (lib_unlikely(reg == NULL)) {
-        fprintf(stderr, "lib_tool_new failed: %s\n", errbuf);
         lib_llm_close(ctx.llm);
         lib_http_close(ctx.http);
         return 1;
@@ -565,8 +609,7 @@ int main(int argc, char **argv)
     spec.tag         = "ops";
     spec.enabled     = 1;
     spec.fn          = demo_tool_host_status;
-    if (lib_unlikely(lib_tool_add(reg, &spec, errbuf, sizeof(errbuf)) != LIB_TOOL_OK)) {
-        fprintf(stderr, "lib_tool_add(host_status) failed: %s\n", errbuf);
+    if (lib_unlikely(lib_tool_add(reg, &spec) != LIB_TOOL_OK)) {
         lib_tool_free(reg);
         lib_llm_close(ctx.llm);
         lib_http_close(ctx.http);
@@ -580,8 +623,7 @@ int main(int argc, char **argv)
     spec.tag         = "math";
     spec.enabled     = 1;
     spec.fn          = demo_tool_add;
-    if (lib_unlikely(lib_tool_add(reg, &spec, errbuf, sizeof(errbuf)) != LIB_TOOL_OK)) {
-        fprintf(stderr, "lib_tool_add(add) failed: %s\n", errbuf);
+    if (lib_unlikely(lib_tool_add(reg, &spec) != LIB_TOOL_OK)) {
         lib_tool_free(reg);
         lib_llm_close(ctx.llm);
         lib_http_close(ctx.http);
@@ -590,11 +632,17 @@ int main(int argc, char **argv)
 
     ctx.tools = reg;
 
-    (void)demo_add_msg(&ctx, LIB_LLM_ROLE_SYSTEM,
-                       "You are a helpful assistant. Call tools when needed.",
-                       NULL, NULL, NULL, 0u, errbuf, sizeof(errbuf));
-    (void)demo_add_msg(&ctx, LIB_LLM_ROLE_USER, prompt,
-                       NULL, NULL, NULL, 0u, errbuf, sizeof(errbuf));
+    if (lib_unlikely(demo_add_msg(&ctx, LIB_LLM_ROLE_SYSTEM,
+                                  "You are a helpful assistant. Call tools when needed.",
+                                  NULL, NULL, NULL, 0u) != 0 ||
+                     demo_add_msg(&ctx, LIB_LLM_ROLE_USER, prompt,
+                                  NULL, NULL, NULL, 0u) != 0)) {
+        demo_free_history(ctx.history, ctx.hist_cnt);
+        lib_tool_free(reg);
+        lib_llm_close(ctx.llm);
+        lib_http_close(ctx.http);
+        return 1;
+    }
 
     acfg.name      = "ollama-agent";
     acfg.max_steps = 8u;
@@ -604,9 +652,8 @@ int main(int argc, char **argv)
     aops.on_tools = demo_on_tools;
     aops.on_step  = demo_on_step;
 
-    ag = lib_agent_new(&acfg, &aops, errbuf, sizeof(errbuf));
+    ag = lib_agent_new(&acfg, &aops);
     if (lib_unlikely(ag == NULL)) {
-        fprintf(stderr, "lib_agent_new failed: %s\n", errbuf);
         demo_free_history(ctx.history, ctx.hist_cnt);
         lib_tool_free(reg);
         lib_llm_close(ctx.llm);
@@ -614,11 +661,13 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    arc = lib_agent_run(ag, &info, errbuf, sizeof(errbuf));
+    arc = lib_agent_run(ag, &info);
     if (lib_unlikely(arc != LIB_AGENT_OK)) {
-        fprintf(stderr, "agent failed (%s): %s\n", lib_agent_strerror(arc), errbuf);
+        (void)fprintf(stderr, "agent aborted (%s): %s\n",
+                      lib_agent_strerror(arc),
+                      lib_err_last()->msg);
     } else if (ctx.final_reply[0] != '\0') {
-        printf("\n=== Final Reply ===\n%s\n", ctx.final_reply);
+        (void)printf("\n=== Final Reply ===\n%s\n", ctx.final_reply);
     }
 
     demo_free_call_array(ctx.pending_calls, ctx.pending_cnt);

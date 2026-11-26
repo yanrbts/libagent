@@ -6,6 +6,7 @@
  */
 
 #include "unity.h"
+#include "lib_error.h"
 #include "lib_llm.h"
 #include "cJSON.h"
 
@@ -107,9 +108,7 @@ static lib_llm_err_t mock_post(void *io_ctx,
                                size_t max_resp_sz,
                                char **out_body,
                                size_t *out_len,
-                               int *out_status,
-                               char *errbuf,
-                               size_t errlen)
+                               int *out_status)
 {
     mock_io_t *io = (mock_io_t *)io_ctx;
 
@@ -130,9 +129,6 @@ static lib_llm_err_t mock_post(void *io_ctx,
     io->max_resp_sz = max_resp_sz;
 
     if (io->rc != LIB_LLM_OK) {
-        if (io->io_err != NULL && errbuf != NULL && errlen > 0u) {
-            (void)snprintf(errbuf, errlen, "%s", io->io_err);
-        }
         return io->rc;
     }
 
@@ -150,7 +146,6 @@ static lib_llm_err_t mock_post(void *io_ctx,
 static lib_llm_ctx_t *open_default_ctx(mock_io_t *io)
 {
     lib_llm_cfg_t  cfg;
-    char           err[256] = {0};
     lib_llm_ctx_t *ctx;
 
     memset(&cfg, 0, sizeof(cfg));
@@ -164,8 +159,8 @@ static lib_llm_ctx_t *open_default_ctx(mock_io_t *io)
     cfg.temperature = -1.0;     /* omit temperature */
     cfg.max_tokens  = 0;        /* omit max_tokens */
 
-    ctx = lib_llm_open(&cfg, err, sizeof(err));
-    TEST_ASSERT_NOT_NULL_MESSAGE(ctx, err);
+    ctx = lib_llm_open(&cfg);
+    TEST_ASSERT_NOT_NULL_MESSAGE(ctx, lib_err_last()->msg);
     return ctx;
 }
 
@@ -173,19 +168,22 @@ void setUp(void)
 {
     memset(&g_oom, 0, sizeof(g_oom));
     mock_io_reset(&g_io);
+    lib_err_set_log_sink(NULL, NULL);
+    lib_err_clear();
 }
 
 void tearDown(void)
 {
     memset(&g_oom, 0, sizeof(g_oom));
     mock_io_reset(&g_io);
+    lib_err_set_log_sink(NULL, NULL);
+    lib_err_clear();
 }
 
 void test_null_and_lifecycle_safety(void)
 {
     lib_llm_res_t res;
 
-    TEST_ASSERT_EQUAL_STRING("", lib_llm_errstr(NULL));
     TEST_ASSERT_EQUAL_STRING("ok", lib_llm_strerror(LIB_LLM_OK));
     TEST_ASSERT_EQUAL_STRING("invalid argument", lib_llm_strerror(LIB_LLM_ERR_ARG));
     TEST_ASSERT_EQUAL_STRING("out of memory", lib_llm_strerror(LIB_LLM_ERR_MEM));
@@ -207,26 +205,24 @@ void test_null_and_lifecycle_safety(void)
 
 void test_open_and_chat_arg_validation(void)
 {
-    char           err[256] = {0};
     lib_llm_cfg_t  cfg;
     lib_llm_ctx_t *ctx;
     lib_llm_msg_t  msg;
     lib_llm_res_t  res;
 
-    TEST_ASSERT_NULL(lib_llm_open(NULL, err, sizeof(err)));
-    TEST_ASSERT_TRUE(err[0] != '\0');
+    TEST_ASSERT_NULL(lib_llm_open(NULL));
 
     memset(&cfg, 0, sizeof(cfg));
-    TEST_ASSERT_NULL(lib_llm_open(&cfg, err, sizeof(err)));
+    TEST_ASSERT_NULL(lib_llm_open(&cfg));
 
     cfg.io.post = mock_post;
-    TEST_ASSERT_NULL(lib_llm_open(&cfg, err, sizeof(err)));
+    TEST_ASSERT_NULL(lib_llm_open(&cfg));
 
     cfg.endpoint = "http://mock.local/v1/chat/completions";
-    TEST_ASSERT_NULL(lib_llm_open(&cfg, err, sizeof(err)));
+    TEST_ASSERT_NULL(lib_llm_open(&cfg));
 
     cfg.model = "gemma4:e4b";
-    ctx = lib_llm_open(&cfg, err, sizeof(err));
+    ctx = lib_llm_open(&cfg);
     TEST_ASSERT_NOT_NULL(ctx);
 
     memset(&msg, 0, sizeof(msg));
@@ -234,15 +230,15 @@ void test_open_and_chat_arg_validation(void)
     msg.content = "hello";
 
     TEST_ASSERT_EQUAL_INT(LIB_LLM_ERR_ARG,
-                          lib_llm_chat(NULL, &msg, 1u, NULL, 0u, &res, err, sizeof(err)));
+                          lib_llm_chat(NULL, &msg, 1u, NULL, 0u, &res));
     TEST_ASSERT_EQUAL_INT(LIB_LLM_ERR_ARG,
-                          lib_llm_chat(ctx, NULL, 1u, NULL, 0u, &res, err, sizeof(err)));
+                          lib_llm_chat(ctx, NULL, 1u, NULL, 0u, &res));
     TEST_ASSERT_EQUAL_INT(LIB_LLM_ERR_ARG,
-                          lib_llm_chat(ctx, &msg, 0u, NULL, 0u, &res, err, sizeof(err)));
+                          lib_llm_chat(ctx, &msg, 0u, NULL, 0u, &res));
     TEST_ASSERT_EQUAL_INT(LIB_LLM_ERR_ARG,
-                          lib_llm_chat(ctx, &msg, 1u, NULL, 0u, NULL, err, sizeof(err)));
+                          lib_llm_chat(ctx, &msg, 1u, NULL, 0u, &res));
     TEST_ASSERT_EQUAL_INT(LIB_LLM_ERR_ARG,
-                          lib_llm_chat(ctx, &msg, 1u, NULL, 1u, &res, err, sizeof(err)));
+                          lib_llm_chat(ctx, &msg, 1u, NULL, 1u, &res));
 
     lib_llm_close(ctx);
 }
@@ -254,7 +250,6 @@ void test_request_encoding_optional_and_tool_fields(void)
     lib_llm_msg_t      msgs[3];
     lib_llm_tool_def_t tools[2];
     lib_llm_res_t      res;
-    char               err[256] = {0};
     cJSON             *root;
     const cJSON       *marr;
     const cJSON       *tarr;
@@ -296,7 +291,7 @@ void test_request_encoding_optional_and_tool_fields(void)
         "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"done\"}}]}";
 
     TEST_ASSERT_EQUAL_INT(LIB_LLM_OK,
-                          lib_llm_chat(ctx, msgs, 3u, tools, 2u, &res, err, sizeof(err)));
+                          lib_llm_chat(ctx, msgs, 3u, tools, 2u, &res));
     TEST_ASSERT_TRUE(g_io.timeout_ms > 0);
     TEST_ASSERT_TRUE(g_io.max_resp_sz > 0u);
 
@@ -327,7 +322,6 @@ void test_invalid_msg_and_tool_schema_index_reporting(void)
     lib_llm_msg_t      msgs[2];
     lib_llm_tool_def_t bad_tool;
     lib_llm_res_t      res;
-    char               err[256] = {0};
 
     memset(msgs, 0, sizeof(msgs));
     msgs[0].role = LIB_LLM_ROLE_USER;
@@ -339,8 +333,7 @@ void test_invalid_msg_and_tool_schema_index_reporting(void)
     msgs[1].tool_call_id = NULL;
 
     TEST_ASSERT_EQUAL_INT(LIB_LLM_ERR_ARG,
-                          lib_llm_chat(ctx, msgs, 2u, NULL, 0u, &res, err, sizeof(err)));
-    TEST_ASSERT_NOT_NULL(strstr(err, "invalid message at index 1"));
+                          lib_llm_chat(ctx, msgs, 2u, NULL, 0u, &res));
     TEST_ASSERT_EQUAL_INT(0, g_io.calls);
 
     /* Invalid tool definition at index 0: schema_json is not a JSON object */
@@ -349,8 +342,9 @@ void test_invalid_msg_and_tool_schema_index_reporting(void)
     bad_tool.schema_json = "[1, 2, 3]";
 
     TEST_ASSERT_EQUAL_INT(LIB_LLM_ERR_ARG,
-                          lib_llm_chat(ctx, msgs, 1u, &bad_tool, 1u, &res, err, sizeof(err)));
-    TEST_ASSERT_NOT_NULL(strstr(err, "invalid tool definition at index 0"));
+                          lib_llm_chat(ctx, msgs, 1u, &bad_tool, 1u, &res));
+    TEST_ASSERT_NOT_NULL(strstr(lib_err_last()->msg,
+                                "invalid tool definition at index 0"));
     TEST_ASSERT_EQUAL_INT(0, g_io.calls);
 
     lib_llm_close(ctx);
@@ -361,7 +355,6 @@ void test_response_edge_cases_and_errors(void)
     lib_llm_ctx_t *ctx = open_default_ctx(&g_io);
     lib_llm_msg_t  msg;
     lib_llm_res_t  res;
-    char           err[256] = {0};
 
     memset(&msg, 0, sizeof(msg));
     msg.role = LIB_LLM_ROLE_USER;
@@ -381,7 +374,7 @@ void test_response_edge_cases_and_errors(void)
         "  }]"
         "}";
     TEST_ASSERT_EQUAL_INT(LIB_LLM_OK,
-                          lib_llm_chat(ctx, &msg, 1u, NULL, 0u, &res, err, sizeof(err)));
+                          lib_llm_chat(ctx, &msg, 1u, NULL, 0u, &res));
     TEST_ASSERT_NULL(res.text);
     TEST_ASSERT_EQUAL_UINT64(1u, (uint64_t)res.tool_count);
     TEST_ASSERT_EQUAL_STRING("", res.tool_calls[0].id);
@@ -394,8 +387,8 @@ void test_response_edge_cases_and_errors(void)
     g_io.status = 200;
     g_io.resp_body = "{\"error\":{\"message\":\"context length exceeded\"}}";
     TEST_ASSERT_EQUAL_INT(LIB_LLM_ERR_API,
-                          lib_llm_chat(ctx, &msg, 1u, NULL, 0u, &res, err, sizeof(err)));
-    TEST_ASSERT_NOT_NULL(strstr(err, "context length exceeded"));
+                          lib_llm_chat(ctx, &msg, 1u, NULL, 0u, &res));
+    TEST_ASSERT_NOT_NULL(strstr(lib_err_last()->msg, "context length exceeded"));
     TEST_ASSERT_NULL(res.raw_json);
     lib_llm_free_res(&res);
 
@@ -404,15 +397,15 @@ void test_response_edge_cases_and_errors(void)
     g_io.status = 500;
     g_io.resp_body = "plain text failure";
     TEST_ASSERT_EQUAL_INT(LIB_LLM_ERR_HTTP,
-                          lib_llm_chat(ctx, &msg, 1u, NULL, 0u, &res, err, sizeof(err)));
-    TEST_ASSERT_NOT_NULL(strstr(err, "500"));
+                          lib_llm_chat(ctx, &msg, 1u, NULL, 0u, &res));
+    TEST_ASSERT_NOT_NULL(strstr(lib_err_last()->msg, "500"));
 
     /* Missing choices[0] */
     mock_io_reset(&g_io);
     g_io.status = 200;
     g_io.resp_body = "{\"choices\":[]}";
     TEST_ASSERT_EQUAL_INT(LIB_LLM_ERR_PROTO,
-                          lib_llm_chat(ctx, &msg, 1u, NULL, 0u, &res, err, sizeof(err)));
+                          lib_llm_chat(ctx, &msg, 1u, NULL, 0u, &res));
 
     /* tool_calls entry missing function.name */
     mock_io_reset(&g_io);
@@ -420,15 +413,15 @@ void test_response_edge_cases_and_errors(void)
     g_io.resp_body =
         "{\"choices\":[{\"message\":{\"tool_calls\":[{\"function\":{\"arguments\":\"{}\"}}]}}]}";
     TEST_ASSERT_EQUAL_INT(LIB_LLM_ERR_PROTO,
-                          lib_llm_chat(ctx, &msg, 1u, NULL, 0u, &res, err, sizeof(err)));
+                          lib_llm_chat(ctx, &msg, 1u, NULL, 0u, &res));
 
     /* Transport failure fallback to lib_llm_strerror when io_err empty */
     mock_io_reset(&g_io);
     g_io.rc = LIB_LLM_ERR_IO;
     g_io.io_err = NULL;
     TEST_ASSERT_EQUAL_INT(LIB_LLM_ERR_IO,
-                          lib_llm_chat(ctx, &msg, 1u, NULL, 0u, &res, err, sizeof(err)));
-    TEST_ASSERT_NOT_NULL(strstr(err, "i/o error"));
+                          lib_llm_chat(ctx, &msg, 1u, NULL, 0u, &res));
+    TEST_ASSERT_NOT_NULL(strstr(lib_err_last()->msg, "i/o error"));
 
     lib_llm_close(ctx);
 }
@@ -440,7 +433,6 @@ void test_oom_injection_paths(void)
     lib_llm_ctx_t *ctx;
     lib_llm_msg_t  msg;
     lib_llm_res_t  res;
-    char           err[256] = {0};
     int            step;
 
     memset(&cfg, 0, sizeof(cfg));
@@ -454,7 +446,7 @@ void test_oom_injection_paths(void)
         g_oom.enabled = 1;
         g_oom.fail_at = step;
         g_oom.current = 0;
-        ctx = lib_llm_open(&cfg, err, sizeof(err));
+        ctx = lib_llm_open(&cfg);
         g_oom.enabled = 0;
         if (ctx != NULL) {
             lib_llm_close(ctx);
@@ -491,7 +483,7 @@ void test_oom_injection_paths(void)
         g_oom.enabled = 1;
         g_oom.fail_at = step;
         g_oom.current = 0;
-        (void)lib_llm_chat(ctx, &msg, 1u, NULL, 0u, &res, err, sizeof(err));
+        (void)lib_llm_chat(ctx, &msg, 1u, NULL, 0u, &res);
         g_oom.enabled = 0;
 
         lib_llm_free_res(&res);

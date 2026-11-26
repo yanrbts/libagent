@@ -7,6 +7,7 @@
 #include "unity.h"
 #include "lib_llm.h"
 #include "lib_http.h"
+#include "lib_error.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,9 +44,7 @@ static lib_llm_err_t http_io_post_adapter(void *io_ctx,
                                           size_t max_resp_sz,
                                           char **out_body,
                                           size_t *out_len,
-                                          int *out_status,
-                                          char *errbuf,
-                                          size_t errlen)
+                                          int *out_status)
 {
     lib_http_ctx_t *http = (lib_http_ctx_t *)io_ctx;
     lib_http_res_t  res;
@@ -65,7 +64,7 @@ static lib_llm_err_t http_io_post_adapter(void *io_ctx,
 
     memset(&res, 0, sizeof(res));
     rc = lib_http_post_json(http, url, api_key, body_json,
-                            timeout_ms, &res, errbuf, errlen);
+                            timeout_ms, &res);
     if (rc != LIB_HTTP_OK) {
         lib_http_free_res(&res);
         return map_http_err(rc);
@@ -106,7 +105,6 @@ void setUp(void)
 {
     lib_http_cfg_t hcfg;
     lib_llm_cfg_t  lcfg;
-    char           err[256] = {0};
 
     build_ollama_endpoint(g_endpoint, sizeof(g_endpoint));
 
@@ -114,8 +112,7 @@ void setUp(void)
     hcfg.timeout_ms  = OLLAMA_TIMEOUT_MS;
     hcfg.max_resp_sz = OLLAMA_MAX_RESP_SZ;
 
-    g_http = lib_http_open(&hcfg, err, sizeof(err));
-    TEST_ASSERT_NOT_NULL_MESSAGE(g_http, err);
+    g_http = lib_http_open(&hcfg);
 
     memset(&lcfg, 0, sizeof(lcfg));
     lcfg.io.post     = http_io_post_adapter;
@@ -128,8 +125,8 @@ void setUp(void)
     lcfg.temperature = 0.1;
     lcfg.max_tokens  = 256;
 
-    g_llm = lib_llm_open(&lcfg, err, sizeof(err));
-    TEST_ASSERT_NOT_NULL_MESSAGE(g_llm, err);
+    g_llm = lib_llm_open(&lcfg);
+    TEST_ASSERT_NOT_NULL_MESSAGE(g_llm, lib_err_last()->msg);
 }
 
 void tearDown(void)
@@ -145,7 +142,6 @@ void test_gemma4_e4b_basic_chat(void)
 {
     lib_llm_msg_t msgs[2];
     lib_llm_res_t res;
-    char          err[256] = {0};
     lib_llm_err_t rc;
 
     memset(msgs, 0, sizeof(msgs));
@@ -154,8 +150,8 @@ void test_gemma4_e4b_basic_chat(void)
     msgs[1].role    = LIB_LLM_ROLE_USER;
     msgs[1].content = "Reply OK and compute 2 + 2.";
 
-    rc = lib_llm_chat(g_llm, msgs, 2u, NULL, 0u, &res, err, sizeof(err));
-    TEST_ASSERT_EQUAL_INT_MESSAGE(LIB_LLM_OK, rc, err);
+    rc = lib_llm_chat(g_llm, msgs, 2u, NULL, 0u, &res);
+    TEST_ASSERT_EQUAL_INT(LIB_LLM_OK, rc);
     TEST_ASSERT_NOT_NULL(res.text);
     TEST_ASSERT_TRUE(res.text[0] != '\0');
     TEST_ASSERT_NOT_NULL(res.raw_json);
@@ -174,7 +170,6 @@ void test_gemma4_e4b_tool_call_flow(void)
     lib_llm_tool_def_t tool;
     lib_llm_msg_t      turn1[1];
     lib_llm_res_t      res1;
-    char               err[256] = {0};
     lib_llm_err_t      rc;
 
     memset(&tool, 0, sizeof(tool));
@@ -186,8 +181,8 @@ void test_gemma4_e4b_tool_call_flow(void)
     turn1[0].role    = LIB_LLM_ROLE_USER;
     turn1[0].content = "Call tool get_uptime now.";
 
-    rc = lib_llm_chat(g_llm, turn1, 1u, &tool, 1u, &res1, err, sizeof(err));
-    TEST_ASSERT_EQUAL_INT_MESSAGE(LIB_LLM_OK, rc, err);
+    rc = lib_llm_chat(g_llm, turn1, 1u, &tool, 1u, &res1);
+    TEST_ASSERT_EQUAL_INT(LIB_LLM_OK, rc);
 
     if (res1.tool_count > 0u) {
         lib_llm_msg_t turn2[3];
@@ -215,8 +210,8 @@ void test_gemma4_e4b_tool_call_flow(void)
                                     : "call_0";
         turn2[2].name = "get_uptime";
 
-        rc = lib_llm_chat(g_llm, turn2, 3u, &tool, 1u, &res2, err, sizeof(err));
-        TEST_ASSERT_EQUAL_INT_MESSAGE(LIB_LLM_OK, rc, err);
+        rc = lib_llm_chat(g_llm, turn2, 3u, &tool, 1u, &res2);
+        TEST_ASSERT_EQUAL_INT(LIB_LLM_OK, rc);
         TEST_ASSERT_NOT_NULL(res2.text);
         printf("[final_reply] %s\n", res2.text);
         lib_llm_free_res(&res2);

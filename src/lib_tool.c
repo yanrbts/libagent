@@ -5,6 +5,7 @@
  */
 
 #include "lib_tool.h"
+#include "lib_error.h"
 #include "util.h"
 #include "cJSON.h"
 
@@ -34,20 +35,6 @@ struct lib_tool_reg {
     size_t            cap;         /* Allocated capacity of entries in element count */
 };
 
-static void lib_tool_set_err(char *errbuf, size_t errlen, const char *msg)
-{
-    if (errbuf != NULL && errlen > 0u) {
-        (void)snprintf(errbuf, errlen, "%s", msg != NULL ? msg : "");
-    }
-}
-
-static void lib_tool_set_errf(char *errbuf, size_t errlen, const char *fmt, const char *arg)
-{
-    if (errbuf != NULL && errlen > 0u) {
-        (void)snprintf(errbuf, errlen, fmt, arg != NULL ? arg : "");
-    }
-}
-
 static int lib_tool_is_blank(const char *s)
 {
     if (lib_unlikely(s == NULL)) {
@@ -63,9 +50,7 @@ static int lib_tool_is_blank(const char *s)
 }
 
 static char *lib_tool_norm_schema(const char *schema_json,
-                                   int        *oom,
-                                   char       *errbuf,
-                                   size_t      errlen)
+                                   int        *oom)
 {
     cJSON *parsed = NULL;
 
@@ -75,12 +60,12 @@ static char *lib_tool_norm_schema(const char *schema_json,
 
     parsed = cJSON_Parse(schema_json);
     if (lib_unlikely(parsed == NULL)) {
-        lib_tool_set_err(errbuf, errlen, "tool schema_json is not valid JSON");
+        lib_err_emit_msg(LIB_ERR_DOM_TOOL, LIB_ERR_PROTOCOL, "tool schema_json is not valid JSON");
         return NULL;
     }
     if (lib_unlikely(!cJSON_IsObject(parsed))) {
         cJSON_Delete(parsed);
-        lib_tool_set_err(errbuf, errlen, "tool schema_json must be a JSON object");
+        lib_err_emit_msg(LIB_ERR_DOM_TOOL, LIB_ERR_PROTOCOL, "tool schema_json must be a JSON object");
         return NULL;
     }
     cJSON_Delete(parsed);
@@ -133,19 +118,19 @@ const char *lib_tool_strerror(lib_tool_err_t err)
     }
 }
 
-lib_tool_reg_t *lib_tool_new(char *errbuf, size_t errlen)
+lib_tool_reg_t *lib_tool_new(void)
 {
     lib_tool_reg_t *reg = (lib_tool_reg_t *)calloc(1u, sizeof(*reg));
 
     if (lib_unlikely(reg == NULL)) {
-        lib_tool_set_err(errbuf, errlen, "failed to allocate tool registry");
+        lib_err_emit_msg(LIB_ERR_DOM_TOOL, LIB_ERR_NOMEM, "failed to allocate tool registry");
         return NULL;
     }
     reg->cap = LIB_TOOL_INIT_CAP;
     reg->entries = (lib_tool_entry_t *)calloc(reg->cap, sizeof(*reg->entries));
     if (lib_unlikely(reg->entries == NULL)) {
         free(reg);
-        lib_tool_set_err(errbuf, errlen, "failed to allocate tool entries");
+        lib_err_emit_msg(LIB_ERR_DOM_TOOL, LIB_ERR_NOMEM, "failed to allocate tool entries");
         return NULL;
     }
     return reg;
@@ -192,9 +177,7 @@ int lib_tool_has(const lib_tool_reg_t *reg, const char *name)
 }
 
 lib_tool_err_t lib_tool_add(lib_tool_reg_t        *reg,
-                            const lib_tool_spec_t *spec,
-                            char                  *errbuf,
-                            size_t                 errlen)
+                            const lib_tool_spec_t *spec)
 {
     int               oom         = 0;
     size_t            new_cap     = 0u;
@@ -205,26 +188,26 @@ lib_tool_err_t lib_tool_add(lib_tool_reg_t        *reg,
     memset(&tmp, 0, sizeof(tmp));
 
     if (lib_unlikely(reg == NULL || spec == NULL)) {
-        lib_tool_set_err(errbuf, errlen, "registry or tool spec is NULL");
+        lib_err_emit_msg(LIB_ERR_DOM_TOOL, LIB_ERR_NOMEM, "registry or tool spec is NULL");
         return LIB_TOOL_ERR_ARG;
     }
     if (lib_unlikely(spec->name == NULL || spec->name[0] == '\0')) {
-        lib_tool_set_err(errbuf, errlen, "tool name must be non-empty");
+        lib_err_emit_msg(LIB_ERR_DOM_TOOL, LIB_ERR_INVALID_ARG, "tool name must be non-empty");
         return LIB_TOOL_ERR_ARG;
     }
     if (lib_unlikely(spec->fn == NULL)) {
-        lib_tool_set_err(errbuf, errlen, "tool callback fn is required");
+        lib_err_emit_msg(LIB_ERR_DOM_TOOL, LIB_ERR_INVALID_ARG, "tool callback fn is required");
         return LIB_TOOL_ERR_ARG;
     }
     if (lib_unlikely(lib_tool_find(reg, spec->name) >= 0)) {
-        lib_tool_set_errf(errbuf, errlen, "duplicate tool name: %s", spec->name);
+        lib_err_emit_msg(LIB_ERR_DOM_TOOL, LIB_ERR_PROTOCOL, "duplicate tool name: %s", spec->name);
         return LIB_TOOL_ERR_EXIST;
     }
 
-    norm_schema = lib_tool_norm_schema(spec->schema_json, &oom, errbuf, errlen);
+    norm_schema = lib_tool_norm_schema(spec->schema_json, &oom);
     if (lib_unlikely(norm_schema == NULL)) {
         if (lib_unlikely(oom)) {
-            lib_tool_set_err(errbuf, errlen, "out of memory normalizing tool schema");
+            lib_err_emit_msg(LIB_ERR_DOM_TOOL, LIB_ERR_NOMEM, "out of memory normalizing tool schema");
             return LIB_TOOL_ERR_MEM;
         }
         return LIB_TOOL_ERR_ARG;
@@ -234,13 +217,13 @@ lib_tool_err_t lib_tool_add(lib_tool_reg_t        *reg,
         new_cap = reg->cap * 2u;
         if (lib_unlikely(new_cap <= reg->cap)) {
             free(norm_schema);
-            lib_tool_set_err(errbuf, errlen, "tool registry capacity overflow");
+            lib_err_emit_msg(LIB_ERR_DOM_TOOL, LIB_ERR_NOMEM, "tool registry capacity overflow");
             return LIB_TOOL_ERR_MEM;
         }
         grown = (lib_tool_entry_t *)realloc(reg->entries, new_cap * sizeof(*grown));
         if (lib_unlikely(grown == NULL)) {
             free(norm_schema);
-            lib_tool_set_err(errbuf, errlen, "out of memory growing tool registry");
+            lib_err_emit_msg(LIB_ERR_DOM_TOOL, LIB_ERR_NOMEM, "out of memory growing tool registry");
             return LIB_TOOL_ERR_MEM;
         }
         memset(grown + reg->cap, 0, (new_cap - reg->cap) * sizeof(*grown));
@@ -263,7 +246,7 @@ lib_tool_err_t lib_tool_add(lib_tool_reg_t        *reg,
         free(tmp.desc);
         free(tmp.schema_json);
         free(tmp.tag);
-        lib_tool_set_err(errbuf, errlen, "out of memory duplicating tool fields");
+        lib_err_emit_msg(LIB_ERR_DOM_TOOL, LIB_ERR_NOMEM, "out of memory duplicating tool fields");
         return LIB_TOOL_ERR_MEM;
     }
 
@@ -273,20 +256,18 @@ lib_tool_err_t lib_tool_add(lib_tool_reg_t        *reg,
 }
 
 lib_tool_err_t lib_tool_del(lib_tool_reg_t *reg,
-                            const char     *name,
-                            char           *errbuf,
-                            size_t          errlen)
+                            const char     *name)
 {
     ssize_t idx = -1;
     size_t  i   = 0u;
 
     if (lib_unlikely(reg == NULL || name == NULL || name[0] == '\0')) {
-        lib_tool_set_err(errbuf, errlen, "invalid registry or tool name");
+        lib_err_emit_msg(LIB_ERR_DOM_TOOL, LIB_ERR_INVALID_ARG, "invalid registry or tool name");
         return LIB_TOOL_ERR_ARG;
     }
     idx = lib_tool_find(reg, name);
     if (lib_unlikely(idx < 0)) {
-        lib_tool_set_errf(errbuf, errlen, "tool not found: %s", name);
+        lib_err_emit_msg(LIB_ERR_DOM_TOOL, LIB_ERR_NOT_FOUND, "tool not found: %s", name);
         return LIB_TOOL_ERR_NOTFOUND;
     }
 
@@ -301,19 +282,17 @@ lib_tool_err_t lib_tool_del(lib_tool_reg_t *reg,
 
 lib_tool_err_t lib_tool_enable(lib_tool_reg_t *reg,
                                const char     *name,
-                               int             enabled,
-                               char           *errbuf,
-                               size_t          errlen)
+                               int             enabled)
 {
     ssize_t idx = -1;
 
     if (lib_unlikely(reg == NULL || name == NULL || name[0] == '\0')) {
-        lib_tool_set_err(errbuf, errlen, "invalid registry or tool name");
+        lib_err_emit_msg(LIB_ERR_DOM_TOOL, LIB_ERR_INVALID_ARG, "invalid registry or tool name");
         return LIB_TOOL_ERR_ARG;
     }
     idx = lib_tool_find(reg, name);
     if (lib_unlikely(idx < 0)) {
-        lib_tool_set_errf(errbuf, errlen, "tool not found: %s", name);
+        lib_err_emit_msg(LIB_ERR_DOM_TOOL, LIB_ERR_NOT_FOUND, "tool not found: %s", name);
         return LIB_TOOL_ERR_NOTFOUND;
     }
     reg->entries[(size_t)idx].enabled = (enabled != 0) ? 1 : 0;
@@ -323,16 +302,14 @@ lib_tool_err_t lib_tool_enable(lib_tool_reg_t *reg,
 lib_tool_err_t lib_tool_enable_tag(lib_tool_reg_t *reg,
                                    const char     *tag,
                                    int             enabled,
-                                   size_t         *out_cnt,
-                                   char           *errbuf,
-                                   size_t          errlen)
+                                   size_t         *out_cnt)
 {
     size_t i        = 0u;
     size_t affected = 0u;
     int    flag     = (enabled != 0) ? 1 : 0;
 
     if (lib_unlikely(reg == NULL || tag == NULL || tag[0] == '\0')) {
-        lib_tool_set_err(errbuf, errlen, "invalid registry or tag");
+        lib_err_emit_msg(LIB_ERR_DOM_TOOL, LIB_ERR_INVALID_ARG, "invalid registry or tag");
         return LIB_TOOL_ERR_ARG;
     }
 
@@ -351,9 +328,7 @@ lib_tool_err_t lib_tool_enable_tag(lib_tool_reg_t *reg,
 
 lib_tool_err_t lib_tool_llm_defs(const lib_tool_reg_t  *reg,
                                  lib_llm_tool_def_t   **out_defs,
-                                 size_t                *out_cnt,
-                                 char                  *errbuf,
-                                 size_t                 errlen)
+                                 size_t                *out_cnt)
 {
     size_t              enabled_n = 0u;
     size_t              idx       = 0u;
@@ -362,7 +337,7 @@ lib_tool_err_t lib_tool_llm_defs(const lib_tool_reg_t  *reg,
     lib_llm_tool_def_t *defs      = NULL;
 
     if (lib_unlikely(reg == NULL || out_defs == NULL || out_cnt == NULL)) {
-        lib_tool_set_err(errbuf, errlen, "invalid arguments to lib_tool_llm_defs");
+        lib_err_emit_msg(LIB_ERR_DOM_TOOL, LIB_ERR_INVALID_ARG, "invalid arguments to lib_tool_llm_defs");
         return LIB_TOOL_ERR_ARG;
     }
 
@@ -376,7 +351,7 @@ lib_tool_err_t lib_tool_llm_defs(const lib_tool_reg_t  *reg,
 
     defs = (lib_llm_tool_def_t *)calloc(enabled_n, sizeof(*defs));
     if (lib_unlikely(defs == NULL)) {
-        lib_tool_set_err(errbuf, errlen, "out of memory allocating llm tool defs");
+        lib_err_emit_msg(LIB_ERR_DOM_TOOL, LIB_ERR_NOMEM, "out of memory allocating llm tool defs");
         return LIB_TOOL_ERR_MEM;
     }
 
@@ -392,7 +367,7 @@ lib_tool_err_t lib_tool_llm_defs(const lib_tool_reg_t  *reg,
         if (lib_unlikely(oom || defs[idx].name == NULL ||
                          defs[idx].description == NULL || defs[idx].schema_json == NULL)) {
             lib_tool_free_defs(defs, enabled_n);
-            lib_tool_set_err(errbuf, errlen, "out of memory duplicating llm tool def");
+            lib_err_emit_msg(LIB_ERR_DOM_TOOL, LIB_ERR_NOMEM, "out of memory duplicating llm tool def");
             return LIB_TOOL_ERR_MEM;
         }
         idx++;
@@ -423,9 +398,7 @@ lib_tool_err_t lib_tool_exec(const lib_tool_reg_t *reg,
                              const char           *name,
                              const char           *args_json,
                              void                 *user_ctx,
-                             lib_tool_res_t       *out_res,
-                             char                 *errbuf,
-                             size_t                errlen)
+                             lib_tool_res_t       *out_res)
 {
     ssize_t                 idx            = -1;
     const lib_tool_entry_t *entry          = NULL;
@@ -437,7 +410,7 @@ lib_tool_err_t lib_tool_exec(const lib_tool_reg_t *reg,
     memset(&call_ctx, 0, sizeof(call_ctx));
 
     if (lib_unlikely(reg == NULL || name == NULL || name[0] == '\0' || out_res == NULL)) {
-        lib_tool_set_err(errbuf, errlen, "invalid arguments to lib_tool_exec");
+        lib_err_emit_msg(LIB_ERR_DOM_TOOL, LIB_ERR_INVALID_ARG, "invalid arguments to lib_tool_exec");
         return LIB_TOOL_ERR_ARG;
     }
 
@@ -445,25 +418,25 @@ lib_tool_err_t lib_tool_exec(const lib_tool_reg_t *reg,
 
     idx = lib_tool_find(reg, name);
     if (lib_unlikely(idx < 0)) {
-        lib_tool_set_errf(errbuf, errlen, "unknown tool: %s", name);
+        lib_err_emit_msg(LIB_ERR_DOM_TOOL, LIB_ERR_NOT_FOUND, "unknown tool: %s", name);
         return LIB_TOOL_ERR_NOTFOUND;
     }
 
     entry = &reg->entries[(size_t)idx];
     if (lib_unlikely(!entry->enabled)) {
-        lib_tool_set_errf(errbuf, errlen, "tool is disabled: %s", name);
+        lib_err_emit_msg(LIB_ERR_DOM_TOOL, LIB_ERR_INTERNAL, "tool is disabled: %s", name);
         return LIB_TOOL_ERR_DISABLED;
     }
 
     effective_args = lib_tool_is_blank(args_json) ? "{}" : args_json;
     parsed_args = cJSON_Parse(effective_args);
     if (lib_unlikely(parsed_args == NULL)) {
-        lib_tool_set_errf(errbuf, errlen, "invalid JSON arguments for tool: %s", name);
+        lib_err_emit_msg(LIB_ERR_DOM_TOOL, LIB_ERR_PROTOCOL, "invalid JSON arguments for tool: %s", name);
         return LIB_TOOL_ERR_JSON;
     }
     if (lib_unlikely(!cJSON_IsObject(parsed_args))) {
         cJSON_Delete(parsed_args);
-        lib_tool_set_errf(errbuf, errlen, "tool arguments must be a JSON object: %s", name);
+        lib_err_emit_msg(LIB_ERR_DOM_TOOL, LIB_ERR_PROTOCOL, "tool arguments must be a JSON object: %s", name);
         return LIB_TOOL_ERR_JSON;
     }
     cJSON_Delete(parsed_args);
@@ -473,12 +446,10 @@ lib_tool_err_t lib_tool_exec(const lib_tool_reg_t *reg,
     call_ctx.args_json = effective_args;
     call_ctx.user_ctx  = user_ctx;
 
-    rc = entry->fn(&call_ctx, entry->tool_ctx, out_res, errbuf, errlen);
+    rc = entry->fn(&call_ctx, entry->tool_ctx, out_res);
     if (lib_unlikely(rc != LIB_TOOL_OK)) {
         lib_tool_res_reset(out_res);
-        if (errbuf != NULL && errlen > 0u && errbuf[0] == '\0') {
-            lib_tool_set_err(errbuf, errlen, lib_tool_strerror(rc));
-        }
+        lib_err_emit_msg(LIB_ERR_DOM_TOOL, LIB_ERR_TOOL_EXEC, lib_tool_strerror(rc));
         return rc;
     }
 
@@ -488,12 +459,10 @@ lib_tool_err_t lib_tool_exec(const lib_tool_reg_t *reg,
 lib_tool_err_t lib_tool_exec_call(const lib_tool_reg_t      *reg,
                                   const lib_llm_tool_call_t *call,
                                   void                      *user_ctx,
-                                  lib_tool_res_t            *out_res,
-                                  char                      *errbuf,
-                                  size_t                     errlen)
+                                  lib_tool_res_t            *out_res)
 {
     if (lib_unlikely(call == NULL)) {
-        lib_tool_set_err(errbuf, errlen, "tool call is NULL");
+        lib_err_emit_msg(LIB_ERR_DOM_TOOL, LIB_ERR_INVALID_ARG, "tool call is NULL");
         return LIB_TOOL_ERR_ARG;
     }
     return lib_tool_exec(reg,
@@ -501,9 +470,7 @@ lib_tool_err_t lib_tool_exec_call(const lib_tool_reg_t      *reg,
                          call->name,
                          call->args_json,
                          user_ctx,
-                         out_res,
-                         errbuf,
-                         errlen);
+                         out_res);
 }
 
 void lib_tool_res_reset(lib_tool_res_t *res)

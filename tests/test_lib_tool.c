@@ -73,16 +73,12 @@ static void dummy_dtor(void *ctx)
 
 static lib_tool_err_t echo_tool_fn(const lib_tool_call_t *call,
                                    void                  *tool_ctx,
-                                   lib_tool_res_t        *out_res,
-                                   char                  *errbuf,
-                                   size_t                 errlen)
+                                   lib_tool_res_t        *out_res)
 {
     int   oom = 0;
     char *copy = NULL;
 
     (void)tool_ctx;
-    (void)errbuf;
-    (void)errlen;
 
     g_exec_calls++;
     if (lib_unlikely(call == NULL || out_res == NULL)) {
@@ -102,17 +98,13 @@ static lib_tool_err_t echo_tool_fn(const lib_tool_call_t *call,
 
 static lib_tool_err_t domain_err_tool_fn(const lib_tool_call_t *call,
                                          void                  *tool_ctx,
-                                         lib_tool_res_t        *out_res,
-                                         char                  *errbuf,
-                                         size_t                 errlen)
+                                         lib_tool_res_t        *out_res)
 {
     int   oom = 0;
     char *msg = NULL;
 
     (void)call;
     (void)tool_ctx;
-    (void)errbuf;
-    (void)errlen;
 
     g_exec_calls++;
     msg = lib_strdup_ex("{\"error\":\"permission denied\"}", &oom);
@@ -128,18 +120,13 @@ static lib_tool_err_t domain_err_tool_fn(const lib_tool_call_t *call,
 
 static lib_tool_err_t fatal_err_tool_fn(const lib_tool_call_t *call,
                                         void                  *tool_ctx,
-                                        lib_tool_res_t        *out_res,
-                                        char                  *errbuf,
-                                        size_t                 errlen)
+                                        lib_tool_res_t        *out_res)
 {
     (void)call;
     (void)tool_ctx;
     (void)out_res;
 
     g_exec_calls++;
-    if (errbuf != NULL && errlen > 0u) {
-        (void)snprintf(errbuf, errlen, "backend crash");
-    }
     return LIB_TOOL_ERR_EXEC;
 }
 
@@ -159,12 +146,10 @@ static void test_reg_lifecycle_and_add_del(void)
     lib_tool_spec_t spec;
     lib_tool_err_t  rc       = LIB_TOOL_OK;
     int             ctx_flag = 0;
-    char            errbuf[128];
 
     memset(&spec, 0, sizeof(spec));
-    memset(errbuf, 0, sizeof(errbuf));
 
-    reg = lib_tool_new(errbuf, sizeof(errbuf));
+    reg = lib_tool_new();
     TEST_ASSERT_NOT_NULL(reg);
     TEST_ASSERT_EQUAL_UINT64(0u, (unsigned long long)lib_tool_count(reg));
     TEST_ASSERT_EQUAL_UINT64(0u, (unsigned long long)lib_tool_enabled_cnt(reg));
@@ -179,19 +164,18 @@ static void test_reg_lifecycle_and_add_del(void)
     spec.tool_ctx    = &ctx_flag;
     spec.dtor        = dummy_dtor;
 
-    rc = lib_tool_add(reg, &spec, errbuf, sizeof(errbuf));
+    rc = lib_tool_add(reg, &spec);
     TEST_ASSERT_EQUAL_INT(LIB_TOOL_OK, rc);
     TEST_ASSERT_EQUAL_UINT64(1u, (unsigned long long)lib_tool_count(reg));
     TEST_ASSERT_EQUAL_UINT64(1u, (unsigned long long)lib_tool_enabled_cnt(reg));
     TEST_ASSERT_EQUAL_INT(1, lib_tool_has(reg, "echo"));
 
     /* Duplicate registration must fail */
-    rc = lib_tool_add(reg, &spec, errbuf, sizeof(errbuf));
+    rc = lib_tool_add(reg, &spec);
     TEST_ASSERT_EQUAL_INT(LIB_TOOL_ERR_EXIST, rc);
-    TEST_ASSERT_TRUE(errbuf[0] != '\0');
 
     /* Delete invokes destructor */
-    rc = lib_tool_del(reg, "echo", errbuf, sizeof(errbuf));
+    rc = lib_tool_del(reg, "echo");
     TEST_ASSERT_EQUAL_INT(LIB_TOOL_OK, rc);
     TEST_ASSERT_EQUAL_INT(1, g_dtor_calls);
     TEST_ASSERT_EQUAL_INT(1, ctx_flag);
@@ -199,7 +183,7 @@ static void test_reg_lifecycle_and_add_del(void)
     TEST_ASSERT_EQUAL_INT(0, lib_tool_has(reg, "echo"));
 
     /* Deleting non-existent tool returns NOTFOUND */
-    rc = lib_tool_del(reg, "echo", errbuf, sizeof(errbuf));
+    rc = lib_tool_del(reg, "echo");
     TEST_ASSERT_EQUAL_INT(LIB_TOOL_ERR_NOTFOUND, rc);
 
     lib_tool_free(reg);
@@ -213,44 +197,40 @@ static void test_add_validation_and_schema_normalization(void)
     lib_tool_err_t      rc        = LIB_TOOL_OK;
     lib_llm_tool_def_t *defs      = NULL;
     size_t              def_cnt   = 0u;
-    char                errbuf[128];
 
     memset(&spec, 0, sizeof(spec));
-    memset(errbuf, 0, sizeof(errbuf));
 
-    reg = lib_tool_new(NULL, 0u);
+    reg = lib_tool_new();
     TEST_ASSERT_NOT_NULL(reg);
 
     /* Invalid arguments */
-    TEST_ASSERT_EQUAL_INT(LIB_TOOL_ERR_ARG, lib_tool_add(NULL, &spec, errbuf, sizeof(errbuf)));
-    TEST_ASSERT_EQUAL_INT(LIB_TOOL_ERR_ARG, lib_tool_add(reg, NULL, errbuf, sizeof(errbuf)));
+    TEST_ASSERT_EQUAL_INT(LIB_TOOL_ERR_ARG, lib_tool_add(NULL, &spec));
+    TEST_ASSERT_EQUAL_INT(LIB_TOOL_ERR_ARG, lib_tool_add(reg, NULL));
 
     spec.name = "";
     spec.fn   = echo_tool_fn;
-    TEST_ASSERT_EQUAL_INT(LIB_TOOL_ERR_ARG, lib_tool_add(reg, &spec, errbuf, sizeof(errbuf)));
+    TEST_ASSERT_EQUAL_INT(LIB_TOOL_ERR_ARG, lib_tool_add(reg, &spec));
 
     spec.name = "bad_fn";
     spec.fn   = NULL;
-    TEST_ASSERT_EQUAL_INT(LIB_TOOL_ERR_ARG, lib_tool_add(reg, &spec, errbuf, sizeof(errbuf)));
-
+    TEST_ASSERT_EQUAL_INT(LIB_TOOL_ERR_ARG, lib_tool_add(reg, &spec));
     /* Invalid JSON schema */
     spec.name        = "bad_json_schema";
     spec.fn          = echo_tool_fn;
     spec.schema_json = "{not valid json";
-    TEST_ASSERT_EQUAL_INT(LIB_TOOL_ERR_ARG, lib_tool_add(reg, &spec, errbuf, sizeof(errbuf)));
+    TEST_ASSERT_EQUAL_INT(LIB_TOOL_ERR_ARG, lib_tool_add(reg, &spec));
 
     /* Non-object JSON schema */
     spec.schema_json = "[\"array\"]";
-    TEST_ASSERT_EQUAL_INT(LIB_TOOL_ERR_ARG, lib_tool_add(reg, &spec, errbuf, sizeof(errbuf)));
-
+    TEST_ASSERT_EQUAL_INT(LIB_TOOL_ERR_ARG, lib_tool_add(reg, &spec));
     /* Blank schema normalizes to "{}" */
     spec.name        = "blank_schema";
     spec.schema_json = "   \t\n ";
     spec.enabled     = 1;
-    rc = lib_tool_add(reg, &spec, errbuf, sizeof(errbuf));
+    rc = lib_tool_add(reg, &spec);
     TEST_ASSERT_EQUAL_INT(LIB_TOOL_OK, rc);
 
-    rc = lib_tool_llm_defs(reg, &defs, &def_cnt, errbuf, sizeof(errbuf));
+    rc = lib_tool_llm_defs(reg, &defs, &def_cnt);
     TEST_ASSERT_EQUAL_INT(LIB_TOOL_OK, rc);
     TEST_ASSERT_EQUAL_UINT64(1u, (unsigned long long)def_cnt);
     TEST_ASSERT_NOT_NULL(defs);
@@ -271,14 +251,12 @@ static void test_enable_and_tag_scoping(void)
     lib_llm_tool_def_t *defs     = NULL;
     size_t              def_cnt  = 0u;
     size_t              affected = 0u;
-    char                errbuf[128];
 
     memset(&s1, 0, sizeof(s1));
     memset(&s2, 0, sizeof(s2));
     memset(&s3, 0, sizeof(s3));
-    memset(errbuf, 0, sizeof(errbuf));
 
-    reg = lib_tool_new(errbuf, sizeof(errbuf));
+    reg = lib_tool_new();
     TEST_ASSERT_NOT_NULL(reg);
 
     s1.name    = "core_ping";
@@ -296,21 +274,21 @@ static void test_enable_and_tag_scoping(void)
     s3.enabled = 0;
     s3.fn      = echo_tool_fn;
 
-    TEST_ASSERT_EQUAL_INT(LIB_TOOL_OK, lib_tool_add(reg, &s1, errbuf, sizeof(errbuf)));
-    TEST_ASSERT_EQUAL_INT(LIB_TOOL_OK, lib_tool_add(reg, &s2, errbuf, sizeof(errbuf)));
-    TEST_ASSERT_EQUAL_INT(LIB_TOOL_OK, lib_tool_add(reg, &s3, errbuf, sizeof(errbuf)));
+    TEST_ASSERT_EQUAL_INT(LIB_TOOL_OK, lib_tool_add(reg, &s1));
+    TEST_ASSERT_EQUAL_INT(LIB_TOOL_OK, lib_tool_add(reg, &s2));
+    TEST_ASSERT_EQUAL_INT(LIB_TOOL_OK, lib_tool_add(reg, &s3));
 
     TEST_ASSERT_EQUAL_UINT64(3u, (unsigned long long)lib_tool_count(reg));
     TEST_ASSERT_EQUAL_UINT64(1u, (unsigned long long)lib_tool_enabled_cnt(reg));
 
     /* Enable all tools under skill:git */
     TEST_ASSERT_EQUAL_INT(LIB_TOOL_OK,
-                          lib_tool_enable_tag(reg, "skill:git", 1, &affected, errbuf, sizeof(errbuf)));
+                          lib_tool_enable_tag(reg, "skill:git", 1, &affected));
     TEST_ASSERT_EQUAL_UINT64(2u, (unsigned long long)affected);
     TEST_ASSERT_EQUAL_UINT64(3u, (unsigned long long)lib_tool_enabled_cnt(reg));
 
     TEST_ASSERT_EQUAL_INT(LIB_TOOL_OK,
-                          lib_tool_llm_defs(reg, &defs, &def_cnt, errbuf, sizeof(errbuf)));
+                          lib_tool_llm_defs(reg, &defs, &def_cnt));
     TEST_ASSERT_EQUAL_UINT64(3u, (unsigned long long)def_cnt);
     lib_tool_free_defs(defs, def_cnt);
     defs = NULL;
@@ -318,13 +296,13 @@ static void test_enable_and_tag_scoping(void)
 
     /* Disable single tool */
     TEST_ASSERT_EQUAL_INT(LIB_TOOL_OK,
-                          lib_tool_enable(reg, "git_diff", 0, errbuf, sizeof(errbuf)));
+                          lib_tool_enable(reg, "git_diff", 0));
     TEST_ASSERT_EQUAL_UINT64(2u, (unsigned long long)lib_tool_enabled_cnt(reg));
 
     /* Disable skill:git tag */
     affected = 0u;
     TEST_ASSERT_EQUAL_INT(LIB_TOOL_OK,
-                          lib_tool_enable_tag(reg, "skill:git", 0, &affected, errbuf, sizeof(errbuf)));
+                          lib_tool_enable_tag(reg, "skill:git", 0, &affected));
     TEST_ASSERT_EQUAL_UINT64(2u, (unsigned long long)affected);
     TEST_ASSERT_EQUAL_UINT64(1u, (unsigned long long)lib_tool_enabled_cnt(reg));
 
@@ -342,7 +320,6 @@ static void test_exec_and_error_handling(void)
     lib_llm_tool_call_t llm_call;
     lib_tool_err_t     rc        = LIB_TOOL_OK;
     int                user_data = 42;
-    char               errbuf[128];
 
     memset(&s_ok, 0, sizeof(s_ok));
     memset(&s_off, 0, sizeof(s_off));
@@ -350,9 +327,8 @@ static void test_exec_and_error_handling(void)
     memset(&s_fat, 0, sizeof(s_fat));
     memset(&res, 0, sizeof(res));
     memset(&llm_call, 0, sizeof(llm_call));
-    memset(errbuf, 0, sizeof(errbuf));
 
-    reg = lib_tool_new(errbuf, sizeof(errbuf));
+    reg = lib_tool_new();
     TEST_ASSERT_NOT_NULL(reg);
 
     s_ok.name  = "echo";
@@ -371,17 +347,17 @@ static void test_exec_and_error_handling(void)
     s_fat.enabled = 1;
     s_fat.fn   = fatal_err_tool_fn;
 
-    TEST_ASSERT_EQUAL_INT(LIB_TOOL_OK, lib_tool_add(reg, &s_ok, errbuf, sizeof(errbuf)));
-    TEST_ASSERT_EQUAL_INT(LIB_TOOL_OK, lib_tool_add(reg, &s_off, errbuf, sizeof(errbuf)));
-    TEST_ASSERT_EQUAL_INT(LIB_TOOL_OK, lib_tool_add(reg, &s_dom, errbuf, sizeof(errbuf)));
-    TEST_ASSERT_EQUAL_INT(LIB_TOOL_OK, lib_tool_add(reg, &s_fat, errbuf, sizeof(errbuf)));
+    TEST_ASSERT_EQUAL_INT(LIB_TOOL_OK, lib_tool_add(reg, &s_ok));
+    TEST_ASSERT_EQUAL_INT(LIB_TOOL_OK, lib_tool_add(reg, &s_off));
+    TEST_ASSERT_EQUAL_INT(LIB_TOOL_OK, lib_tool_add(reg, &s_dom));
+    TEST_ASSERT_EQUAL_INT(LIB_TOOL_OK, lib_tool_add(reg, &s_fat));
 
     /* Normal execution via lib_llm_tool_call_t */
     llm_call.id        = "call_001";
     llm_call.name      = "echo";
     llm_call.args_json = "{\"q\":\"hello\"}";
 
-    rc = lib_tool_exec_call(reg, &llm_call, &user_data, &res, errbuf, sizeof(errbuf));
+    rc = lib_tool_exec_call(reg, &llm_call, &user_data, &res);
     TEST_ASSERT_EQUAL_INT(LIB_TOOL_OK, rc);
     TEST_ASSERT_EQUAL_INT(0, res.is_error);
     TEST_ASSERT_EQUAL_STRING("{\"q\":\"hello\"}", res.content);
@@ -390,39 +366,38 @@ static void test_exec_and_error_handling(void)
     TEST_ASSERT_NULL(res.content);
 
     /* Blank args normalize to "{}" */
-    rc = lib_tool_exec(reg, "call_002", "echo", "   ", NULL, &res, errbuf, sizeof(errbuf));
+    rc = lib_tool_exec(reg, "call_002", "echo", "   ", NULL, &res);
     TEST_ASSERT_EQUAL_INT(LIB_TOOL_OK, rc);
     TEST_ASSERT_EQUAL_STRING("{}", res.content);
     lib_tool_res_reset(&res);
 
     /* Unknown tool */
-    rc = lib_tool_exec(reg, "call_003", "missing", "{}", NULL, &res, errbuf, sizeof(errbuf));
+    rc = lib_tool_exec(reg, "call_003", "missing", "{}", NULL, &res);
     TEST_ASSERT_EQUAL_INT(LIB_TOOL_ERR_NOTFOUND, rc);
 
     /* Disabled tool */
-    rc = lib_tool_exec(reg, "call_004", "disabled_tool", "{}", NULL, &res, errbuf, sizeof(errbuf));
+    rc = lib_tool_exec(reg, "call_004", "disabled_tool", "{}", NULL, &res);
     TEST_ASSERT_EQUAL_INT(LIB_TOOL_ERR_DISABLED, rc);
 
     /* Invalid JSON args */
-    rc = lib_tool_exec(reg, "call_005", "echo", "{broken", NULL, &res, errbuf, sizeof(errbuf));
+    rc = lib_tool_exec(reg, "call_005", "echo", "{broken", NULL, &res);
     TEST_ASSERT_EQUAL_INT(LIB_TOOL_ERR_JSON, rc);
 
     /* Non-object JSON args */
-    rc = lib_tool_exec(reg, "call_006", "echo", "[1, 2, 3]", NULL, &res, errbuf, sizeof(errbuf));
+    rc = lib_tool_exec(reg, "call_006", "echo", "[1, 2, 3]", NULL, &res);
     TEST_ASSERT_EQUAL_INT(LIB_TOOL_ERR_JSON, rc);
 
     /* Handled domain error: returns LIB_TOOL_OK with is_error == 1 */
-    rc = lib_tool_exec(reg, "call_007", "domain_fail", "{}", NULL, &res, errbuf, sizeof(errbuf));
+    rc = lib_tool_exec(reg, "call_007", "domain_fail", "{}", NULL, &res);
     TEST_ASSERT_EQUAL_INT(LIB_TOOL_OK, rc);
     TEST_ASSERT_EQUAL_INT(1, res.is_error);
     TEST_ASSERT_EQUAL_STRING("{\"error\":\"permission denied\"}", res.content);
     lib_tool_res_reset(&res);
 
     /* Fatal tool callback error */
-    rc = lib_tool_exec(reg, "call_008", "fatal_fail", "{}", NULL, &res, errbuf, sizeof(errbuf));
+    rc = lib_tool_exec(reg, "call_008", "fatal_fail", "{}", NULL, &res);
     TEST_ASSERT_EQUAL_INT(LIB_TOOL_ERR_EXEC, rc);
     TEST_ASSERT_NULL(res.content);
-    TEST_ASSERT_EQUAL_STRING("backend crash", errbuf);
 
     lib_tool_free(reg);
 }
@@ -436,24 +411,22 @@ static void test_oom_paths(void)
     size_t              def_cnt = 0u;
     int                 hit_mem = 0;
     int                 step    = 0;
-    char                errbuf[128];
 
     memset(&spec, 0, sizeof(spec));
-    memset(errbuf, 0, sizeof(errbuf));
 
     /* Fail initial reg allocation (calloc #1) */
     g_mock_calloc_fail_after = 0;
-    reg = lib_tool_new(errbuf, sizeof(errbuf));
+    reg = lib_tool_new();
     TEST_ASSERT_NULL(reg);
     g_mock_calloc_fail_after = -1;
 
     /* Fail entries array allocation (calloc #2) */
     g_mock_calloc_fail_after = 1;
-    reg = lib_tool_new(errbuf, sizeof(errbuf));
+    reg = lib_tool_new();
     TEST_ASSERT_NULL(reg);
     g_mock_calloc_fail_after = -1;
 
-    reg = lib_tool_new(errbuf, sizeof(errbuf));
+    reg = lib_tool_new();
     TEST_ASSERT_NOT_NULL(reg);
 
     spec.name        = "oom_tool";
@@ -465,9 +438,8 @@ static void test_oom_paths(void)
 
     /* Sweep malloc failure across steps 0..16 so earlier cJSON allocs do not mask LIB_TOOL_ERR_MEM */
     for (step = 0; step <= 16; step++) {
-        memset(errbuf, 0, sizeof(errbuf));
         g_mock_malloc_fail_after = step;
-        rc = lib_tool_add(reg, &spec, errbuf, sizeof(errbuf));
+        rc = lib_tool_add(reg, &spec);
         g_mock_malloc_fail_after = -1;
 
         if (rc == LIB_TOOL_ERR_MEM) {
@@ -476,20 +448,19 @@ static void test_oom_paths(void)
             break;
         }
         if (rc == LIB_TOOL_OK) {
-            TEST_ASSERT_EQUAL_INT(LIB_TOOL_OK, lib_tool_del(reg, "oom_tool", errbuf, sizeof(errbuf)));
+            TEST_ASSERT_EQUAL_INT(LIB_TOOL_OK, lib_tool_del(reg, "oom_tool"));
         }
     }
     TEST_ASSERT_TRUE_MESSAGE(hit_mem, "expected LIB_TOOL_ERR_MEM during lib_tool_add");
 
     /* Add valid tool, then sweep malloc failure during lib_tool_llm_defs */
-    rc = lib_tool_add(reg, &spec, errbuf, sizeof(errbuf));
+    rc = lib_tool_add(reg, &spec);
     TEST_ASSERT_EQUAL_INT(LIB_TOOL_OK, rc);
 
     hit_mem = 0;
     for (step = 0; step <= 8; step++) {
-        memset(errbuf, 0, sizeof(errbuf));
         g_mock_malloc_fail_after = step;
-        rc = lib_tool_llm_defs(reg, &defs, &def_cnt, errbuf, sizeof(errbuf));
+        rc = lib_tool_llm_defs(reg, &defs, &def_cnt);
         g_mock_malloc_fail_after = -1;
 
         if (rc == LIB_TOOL_ERR_MEM) {

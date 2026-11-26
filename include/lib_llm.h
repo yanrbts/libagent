@@ -64,9 +64,7 @@ typedef lib_llm_err_t (*lib_llm_post_fn)(void *io_ctx,
                                          size_t max_resp_sz,
                                          char **out_body,
                                          size_t *out_len,
-                                         int *out_status,
-                                         char *errbuf,
-                                         size_t errlen);
+                                         int *out_status);
 
 typedef struct lib_llm_io {
     lib_llm_post_fn post; /* required */
@@ -131,14 +129,11 @@ typedef struct lib_llm_res {
  *
  * @param cfg     Configuration snapshot; must not be NULL, and cfg->io.post,
  *                cfg->endpoint, and cfg->model must be non-NULL and non-empty.
- * @param errbuf  Optional buffer receiving a formatted error message on failure.
- * @param errlen  Capacity of errbuf in bytes; ignored if errbuf is NULL or 0.
  *
  * @return Initialized context pointer on success, or NULL on invalid input or
  *         memory allocation failure.
  */
-LIBAGENT_API lib_llm_ctx_t *lib_llm_open(const lib_llm_cfg_t *cfg,
-                                         char *errbuf, size_t errlen);
+LIBAGENT_API lib_llm_ctx_t *lib_llm_open(const lib_llm_cfg_t *cfg);
 
 /**
  * Destroy an LLM client context and release all owned resources.
@@ -165,8 +160,6 @@ LIBAGENT_API void lib_llm_close(lib_llm_ctx_t *ctx);
  * @param tool_count  Number of elements in tools.
  * @param out_res     Output response structure populated on success and zeroed
  *                    on error; must not be NULL.
- * @param errbuf      Optional buffer receiving a formatted error message on failure.
- * @param errlen      Capacity of errbuf in bytes; ignored if errbuf is NULL or 0.
  *
  * @return LIB_LLM_OK on success, or a negative lib_llm_err_t error code on
  *         failure.
@@ -176,9 +169,7 @@ LIBAGENT_API lib_llm_err_t  lib_llm_chat(lib_llm_ctx_t *ctx,
                                          size_t msg_count,
                                          const lib_llm_tool_def_t *tools,
                                          size_t tool_count,
-                                         lib_llm_res_t *out_res,
-                                         char *errbuf,
-                                         size_t errlen);
+                                         lib_llm_res_t *out_res);
 
 /**
  * Release all heap buffers owned by a response structure and zero its fields.
@@ -198,19 +189,6 @@ LIBAGENT_API void lib_llm_free_res(lib_llm_res_t *res);
  * @param count  Number of initialized elements in calls.
  */
 LIBAGENT_API void lib_llm_free_calls(lib_llm_tool_call_t *calls, size_t count);
-
-/**
- * Return the last diagnostic error message recorded on ctx.
- *
- * Returns an empty string if ctx is NULL or no error has occurred. The
- * returned pointer remains valid until the next operation on ctx or
- * lib_llm_close().
- *
- * @param ctx  Context handle to query, or NULL.
- *
- * @return NUL-terminated error string (never NULL).
- */
-LIBAGENT_API const char *lib_llm_errstr(const lib_llm_ctx_t *ctx);
 
 /**
  * Return a static human-readable description for a lib_llm_err_t status code.

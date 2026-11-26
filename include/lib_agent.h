@@ -87,9 +87,7 @@ typedef struct lib_agent_ops {
     lib_agent_err_t (*on_llm)(void                  *user_ctx,
                               const char            *agent_name,
                               size_t                 step_idx,
-                              lib_agent_turn_kind_t *out_kind,
-                              char                  *errbuf,
-                              size_t                 errlen);
+                              lib_agent_turn_kind_t *out_kind);
 
     /**
      * Dispatch pending tool calls from the latest LLM turn and record results.
@@ -107,9 +105,7 @@ typedef struct lib_agent_ops {
                                 const char  *agent_name,
                                 size_t       step_idx,
                                 size_t      *out_calls,
-                                size_t      *out_errors,
-                                char        *errbuf,
-                                size_t       errlen);
+                                size_t      *out_errors);
 
     /**
      * Optional post-step observation and control hook.
@@ -152,9 +148,7 @@ LIBAGENT_API const char *lib_agent_state_str(lib_agent_state_t state);
  * @return       Initialized lib_agent_t handle, or NULL on error.
  */
 LIBAGENT_API lib_agent_t *lib_agent_new(const lib_agent_cfg_t *cfg,
-                                        const lib_agent_ops_t *ops,
-                                        char                  *errbuf,
-                                        size_t                 errlen);
+                                        const lib_agent_ops_t *ops);
 
 /**
  * Release all resources owned by an agent instance.
@@ -167,13 +161,9 @@ LIBAGENT_API void lib_agent_free(lib_agent_t *ag);
  * Reset an agent instance to IDLE with zeroed step counter for a new run.
  *
  * @param ag     Target agent instance.
- * @param errbuf Optional diagnostic buffer populated on failure.
- * @param errlen Capacity of errbuf in bytes.
  * @return       LIB_AGENT_OK on success, or LIB_AGENT_ERR_ARG if ag is NULL.
  */
-LIBAGENT_API lib_agent_err_t lib_agent_reset(lib_agent_t *ag,
-                                             char        *errbuf,
-                                             size_t       errlen);
+LIBAGENT_API lib_agent_err_t lib_agent_reset(lib_agent_t *ag);
 
 /**
  * Request early termination of the active or upcoming run.
@@ -211,14 +201,10 @@ LIBAGENT_API const char *lib_agent_name(const lib_agent_t *ag);
  *
  * @param ag       Target agent instance.
  * @param out_info Optional output snapshot of the executed step.
- * @param errbuf   Optional diagnostic buffer populated on failure.
- * @param errlen   Capacity of errbuf in bytes.
  * @return         LIB_AGENT_OK on step completion, or a negative error code.
  */
 LIBAGENT_API lib_agent_err_t lib_agent_step(lib_agent_t           *ag,
-                                            lib_agent_step_info_t *out_info,
-                                            char                  *errbuf,
-                                            size_t                 errlen);
+                                            lib_agent_step_info_t *out_info);
 
 /**
  * Run the agent loop until reaching DONE, ABORTED, max_steps, or an error.
@@ -230,9 +216,7 @@ LIBAGENT_API lib_agent_err_t lib_agent_step(lib_agent_t           *ag,
  * @return         LIB_AGENT_OK when DONE is reached, or a negative error code.
  */
 LIBAGENT_API lib_agent_err_t lib_agent_run(lib_agent_t           *ag,
-                                           lib_agent_step_info_t *out_info,
-                                           char                  *errbuf,
-                                           size_t                 errlen);
+                                           lib_agent_step_info_t *out_info);
 
 #ifdef __cplusplus
 }

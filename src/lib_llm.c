@@ -5,6 +5,7 @@
  */
 
 #include "lib_llm.h"
+#include "lib_error.h"
 #include "util.h"
 #include "cJSON.h"
 
@@ -86,26 +87,7 @@ static const char *const k_llm_wire_roles[] = {
 
 struct lib_llm_ctx {
     lib_llm_cfg_t cfg;
-    char          last_err[256];
 };
-
-static void lib_llm_set_err(lib_llm_ctx_t *ctx, char *errbuf, size_t errlen,
-                            const char *fmt, ...)
-{
-    char tmp[256];
-    va_list ap;
-
-    va_start(ap, fmt);
-    (void)vsnprintf(tmp, sizeof(tmp), fmt, ap);
-    va_end(ap);
-
-    if (ctx != NULL) {
-        (void)snprintf(ctx->last_err, sizeof(ctx->last_err), "%s", tmp);
-    }
-    if (errbuf != NULL && errlen > 0u) {
-        (void)snprintf(errbuf, errlen, "%s", tmp);
-    }
-}
 
 static const char *lib_llm_role_str(lib_llm_role_t role)
 {
@@ -495,10 +477,10 @@ static void lib_llm_extract_http_err_detail(const char *body, char *out, size_t 
 
 static lib_llm_err_t lib_llm_parse_calls(lib_llm_ctx_t *ctx,
                                          const cJSON *calls_arr,
-                                         lib_llm_res_t *out_res,
-                                         char *errbuf,
-                                         size_t errlen)
+                                         lib_llm_res_t *out_res)
 {
+    (void)ctx;
+
     size_t               n;
     size_t               idx;
     lib_llm_tool_call_t *list;
@@ -515,7 +497,7 @@ static lib_llm_err_t lib_llm_parse_calls(lib_llm_ctx_t *ctx,
 
     list = (lib_llm_tool_call_t *)calloc(n, sizeof(*list));
     if (lib_unlikely(list == NULL)) {
-        lib_llm_set_err(ctx, errbuf, errlen, "out of memory allocating tool_calls");
+        lib_err_emit_msg(LIB_ERR_DOM_LLM, LIB_ERR_NOMEM, "out of memory allocating tool_calls");
         return LIB_LLM_ERR_MEM;
     }
 
@@ -530,7 +512,7 @@ static lib_llm_err_t lib_llm_parse_calls(lib_llm_ctx_t *ctx,
 
         if (lib_unlikely(!cJSON_IsObject(item))) {
             lib_llm_free_calls(list, idx);
-            lib_llm_set_err(ctx, errbuf, errlen, "tool_calls[%zu] is not an object", idx);
+            lib_err_emit_msg(LIB_ERR_DOM_LLM, LIB_ERR_PROTOCOL, "tool_calls[%zu] is not an object", idx);
             return LIB_LLM_ERR_PROTO;
         }
 
@@ -546,7 +528,7 @@ static lib_llm_err_t lib_llm_parse_calls(lib_llm_ctx_t *ctx,
         if (lib_unlikely(!cJSON_IsString(name_j) || name_j->valuestring == NULL ||
                          name_j->valuestring[0] == '\0')) {
             lib_llm_free_calls(list, idx);
-            lib_llm_set_err(ctx, errbuf, errlen,
+            lib_err_emit_msg(LIB_ERR_DOM_LLM, LIB_ERR_NOT_FOUND,
                             "tool_calls[%zu] missing function.name", idx);
             return LIB_LLM_ERR_PROTO;
         }
@@ -573,7 +555,7 @@ static lib_llm_err_t lib_llm_parse_calls(lib_llm_ctx_t *ctx,
 
         if (lib_unlikely(oom != 0)) {
             lib_llm_free_calls(list, idx + 1u);
-            lib_llm_set_err(ctx, errbuf, errlen,
+            lib_err_emit_msg(LIB_ERR_DOM_LLM, LIB_ERR_NOMEM,
                             "out of memory parsing tool_calls[%zu]", idx);
             return LIB_LLM_ERR_MEM;
         }
@@ -614,9 +596,7 @@ static void lib_llm_parse_usage(const cJSON *root, lib_llm_usage_t *usage)
 
 static lib_llm_err_t lib_llm_parse_resp(lib_llm_ctx_t *ctx,
                                         const char *raw_body,
-                                        lib_llm_res_t *out_res,
-                                        char *errbuf,
-                                        size_t errlen)
+                                        lib_llm_res_t *out_res)
 {
     cJSON        *root = NULL;
     const cJSON  *api_err;
@@ -632,7 +612,7 @@ static lib_llm_err_t lib_llm_parse_resp(lib_llm_ctx_t *ctx,
     root = cJSON_Parse(raw_body);
     if (lib_unlikely(root == NULL || !cJSON_IsObject(root))) {
         cJSON_Delete(root);
-        lib_llm_set_err(ctx, errbuf, errlen, "invalid JSON in LLM response");
+        lib_err_emit_msg(LIB_ERR_DOM_LLM, LIB_ERR_PROTOCOL, "invalid JSON in LLM response");
         return LIB_LLM_ERR_PROTO;
     }
 
@@ -640,7 +620,7 @@ static lib_llm_err_t lib_llm_parse_resp(lib_llm_ctx_t *ctx,
     if (cJSON_IsObject(api_err)) {
         const cJSON *emsg = cJSON_GetObjectItemCaseSensitive(api_err, LLM_K(LLM_KEY_MESSAGE));
         out_res->raw_json = lib_strdup_ex(raw_body, NULL);
-        lib_llm_set_err(ctx, errbuf, errlen, "LLM API error: %s",
+        lib_err_emit_msg(LIB_ERR_DOM_LLM, LIB_ERR_PROTOCOL, "LLM API error: %s",
                         (cJSON_IsString(emsg) && emsg->valuestring != NULL)
                             ? emsg->valuestring
                             : "unknown error");
@@ -651,7 +631,7 @@ static lib_llm_err_t lib_llm_parse_resp(lib_llm_ctx_t *ctx,
     out_res->raw_json = lib_strdup_ex(raw_body, &oom);
     if (lib_unlikely(oom != 0)) {
         cJSON_Delete(root);
-        lib_llm_set_err(ctx, errbuf, errlen, "out of memory storing raw_json");
+        lib_err_emit_msg(LIB_ERR_DOM_LLM, LIB_ERR_NOMEM, "out of memory storing raw_json");
         return LIB_LLM_ERR_MEM;
     }
 
@@ -661,7 +641,7 @@ static lib_llm_err_t lib_llm_parse_resp(lib_llm_ctx_t *ctx,
     first   = cJSON_IsArray(choices) ? cJSON_GetArrayItem(choices, 0) : NULL;
     if (lib_unlikely(!cJSON_IsObject(first))) {
         cJSON_Delete(root);
-        lib_llm_set_err(ctx, errbuf, errlen, "LLM response missing choices[0]");
+        lib_err_emit_msg(LIB_ERR_DOM_LLM, LIB_ERR_PROTOCOL, "LLM response missing choices[0]");
         return LIB_LLM_ERR_PROTO;
     }
 
@@ -670,7 +650,7 @@ static lib_llm_err_t lib_llm_parse_resp(lib_llm_ctx_t *ctx,
         out_res->finish_reason = lib_strdup_ex(finish->valuestring, &oom);
         if (lib_unlikely(oom != 0)) {
             cJSON_Delete(root);
-            lib_llm_set_err(ctx, errbuf, errlen, "out of memory parsing finish_reason");
+            lib_err_emit_msg(LIB_ERR_DOM_LLM, LIB_ERR_NOMEM, "out of memory parsing finish_reason");
             return LIB_LLM_ERR_MEM;
         }
     }
@@ -678,7 +658,7 @@ static lib_llm_err_t lib_llm_parse_resp(lib_llm_ctx_t *ctx,
     msg = cJSON_GetObjectItemCaseSensitive(first, LLM_K(LLM_KEY_MESSAGE));
     if (lib_unlikely(!cJSON_IsObject(msg))) {
         cJSON_Delete(root);
-        lib_llm_set_err(ctx, errbuf, errlen, "LLM choice missing message object");
+        lib_err_emit_msg(LIB_ERR_DOM_LLM, LIB_ERR_PROTOCOL, "LLM choice missing message object");
         return LIB_LLM_ERR_PROTO;
     }
 
@@ -687,13 +667,13 @@ static lib_llm_err_t lib_llm_parse_resp(lib_llm_ctx_t *ctx,
         out_res->text = lib_strdup_ex(content->valuestring, &oom);
         if (lib_unlikely(oom != 0)) {
             cJSON_Delete(root);
-            lib_llm_set_err(ctx, errbuf, errlen, "out of memory copying message content");
+            lib_err_emit_msg(LIB_ERR_DOM_LLM, LIB_ERR_NOMEM, "out of memory copying message content");
             return LIB_LLM_ERR_MEM;
         }
     }
 
     calls = cJSON_GetObjectItemCaseSensitive(msg, LLM_K(LLM_KEY_TOOL_CALLS));
-    crc   = lib_llm_parse_calls(ctx, calls, out_res, errbuf, errlen);
+    crc   = lib_llm_parse_calls(ctx, calls, out_res);
     cJSON_Delete(root);
     return crc;
 }
@@ -721,7 +701,7 @@ static int lib_llm_cfg_init_owned(lib_llm_cfg_t *dst, const lib_llm_cfg_t *src, 
     return 0;
 }
 
-lib_llm_ctx_t *lib_llm_open(const lib_llm_cfg_t *cfg, char *errbuf, size_t errlen)
+lib_llm_ctx_t *lib_llm_open(const lib_llm_cfg_t *cfg)
 {
     lib_llm_ctx_t *ctx;
     int            oom = 0;
@@ -729,18 +709,18 @@ lib_llm_ctx_t *lib_llm_open(const lib_llm_cfg_t *cfg, char *errbuf, size_t errle
     if (lib_unlikely(cfg == NULL || cfg->io.post == NULL ||
                      cfg->endpoint == NULL || cfg->endpoint[0] == '\0' ||
                      cfg->model == NULL || cfg->model[0] == '\0')) {
-        lib_llm_set_err(NULL, errbuf, errlen, "invalid lib_llm_cfg_t");
+        lib_err_emit_msg(LIB_ERR_DOM_LLM, LIB_ERR_INVALID_ARG, "invalid lib_llm_cfg_t");
         return NULL;
     }
 
     ctx = (lib_llm_ctx_t *)calloc(1, sizeof(*ctx));
     if (lib_unlikely(ctx == NULL)) {
-        lib_llm_set_err(NULL, errbuf, errlen, "out of memory allocating lib_llm_ctx_t");
+        lib_err_emit_msg(LIB_ERR_DOM_LLM, LIB_ERR_NOMEM, "out of memory allocating lib_llm_ctx_t");
         return NULL;
     }
 
     if (lib_unlikely(lib_llm_cfg_init_owned(&ctx->cfg, cfg, &oom) != 0)) {
-        lib_llm_set_err(ctx, errbuf, errlen, "out of memory duplicating config strings");
+        lib_err_emit_msg(LIB_ERR_DOM_LLM, LIB_ERR_NOMEM, "out of memory duplicating config strings");
         lib_llm_close(ctx);
         return NULL;
     }
@@ -793,9 +773,7 @@ lib_llm_err_t lib_llm_chat(lib_llm_ctx_t *ctx,
                            size_t msg_count,
                            const lib_llm_tool_def_t *tools,
                            size_t tool_count,
-                           lib_llm_res_t *out_res,
-                           char *errbuf,
-                           size_t errlen)
+                           lib_llm_res_t *out_res)
 {
     char         *req_json    = NULL;
     char         *resp_body   = NULL;
@@ -805,39 +783,35 @@ lib_llm_err_t lib_llm_chat(lib_llm_ctx_t *ctx,
     int           http_status = 0;
     int           bad_arg     = 0;
     int           bad_is_tool = 0;
-    char          io_err[256];
     lib_llm_err_t irc;
     lib_llm_err_t prc;
     const char   *body;
 
     if (lib_unlikely(ctx == NULL || ctx->cfg.io.post == NULL ||
                      msgs == NULL || msg_count == 0u || out_res == NULL)) {
-        lib_llm_set_err(ctx, errbuf, errlen, "invalid arguments to lib_llm_chat");
+        lib_err_emit_msg(LIB_ERR_DOM_LLM, LIB_ERR_INVALID_ARG, "invalid arguments to lib_llm_chat");
         return LIB_LLM_ERR_ARG;
     }
 
     if (lib_unlikely(tools == NULL && tool_count > 0u)) {
-        lib_llm_set_err(ctx, errbuf, errlen, "tools is NULL but tool_count > 0");
+        lib_err_emit_msg(LIB_ERR_DOM_LLM, LIB_ERR_INVALID_ARG, "tools is NULL but tool_count > 0");
         return LIB_LLM_ERR_ARG;
     }
 
     memset(out_res, 0, sizeof(*out_res));
-    io_err[0] = '\0';
 
     req_json = lib_llm_build_req_json(ctx, msgs, msg_count, tools, tool_count,
                                       &bad_arg, &bad_is_tool, &bad_index);
     if (lib_unlikely(req_json == NULL)) {
         if (bad_arg) {
             if (bad_is_tool) {
-                lib_llm_set_err(ctx, errbuf, errlen,
-                                "invalid tool definition at index %zu", bad_index);
+                lib_err_emit_msg(LIB_ERR_DOM_LLM, LIB_ERR_INVALID_ARG, "invalid tool definition at index %zu", bad_index);
             } else {
-                lib_llm_set_err(ctx, errbuf, errlen,
-                                "invalid message at index %zu", bad_index);
+                lib_err_emit_msg(LIB_ERR_DOM_LLM, LIB_ERR_INVALID_ARG, "invalid message at index %zu", bad_index);
             }
             return LIB_LLM_ERR_ARG;
         }
-        lib_llm_set_err(ctx, errbuf, errlen, "out of memory serializing chat request");
+        lib_err_emit_msg(LIB_ERR_DOM_LLM, LIB_ERR_NOMEM, "out of memory serializing chat request");
         return LIB_LLM_ERR_MEM;
     }
 
@@ -851,18 +825,16 @@ lib_llm_err_t lib_llm_chat(lib_llm_ctx_t *ctx,
                            ctx->cfg.max_resp_sz,
                            &resp_body,
                            &resp_len,
-                           &http_status,
-                           io_err,
-                           sizeof(io_err));
+                           &http_status);
     free(req_json);
     req_json = NULL;
 
     if (lib_unlikely(irc != LIB_LLM_OK)) {
         free(resp_body);
-        lib_llm_set_err(ctx, errbuf, errlen,
+        lib_err_emit_msg(LIB_ERR_DOM_LLM, LIB_ERR_INTERNAL,
                         "transport failed for '%s': %s",
                         ctx->cfg.endpoint,
-                        io_err[0] != '\0' ? io_err : lib_llm_strerror(irc));
+                        lib_llm_strerror(irc));
         return irc;
     }
 
@@ -870,7 +842,7 @@ lib_llm_err_t lib_llm_chat(lib_llm_ctx_t *ctx,
         char detail[192];
 
         lib_llm_extract_http_err_detail(resp_body, detail, sizeof(detail));
-        lib_llm_set_err(ctx, errbuf, errlen,
+        lib_err_emit_msg(LIB_ERR_DOM_LLM, LIB_ERR_PROTOCOL,
                         "HTTP status %d from '%s'%s",
                         http_status, ctx->cfg.endpoint, detail);
         free(resp_body);
@@ -878,21 +850,13 @@ lib_llm_err_t lib_llm_chat(lib_llm_ctx_t *ctx,
     }
 
     body = (resp_body != NULL) ? resp_body : LLM_VAL_EMPTY_STR;
-    prc  = lib_llm_parse_resp(ctx, body, out_res, errbuf, errlen);
+    prc  = lib_llm_parse_resp(ctx, body, out_res);
     free(resp_body);
 
     if (lib_unlikely(prc != LIB_LLM_OK)) {
         lib_llm_free_res(out_res);
     }
     return prc;
-}
-
-const char *lib_llm_errstr(const lib_llm_ctx_t *ctx)
-{
-    if (ctx == NULL) {
-        return LLM_VAL_EMPTY_STR;
-    }
-    return ctx->last_err;
 }
 
 const char *lib_llm_strerror(lib_llm_err_t err)

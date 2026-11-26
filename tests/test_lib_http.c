@@ -165,22 +165,20 @@ void tearDown(void)
 
 static void test_http_invalid_args(void)
 {
-    char errbuf[128] = {0};
     lib_http_res_t res;
     memset(&res, 0, sizeof(res));
 
-    lib_http_err_t rc = lib_http_exec(NULL, NULL, &res, errbuf, sizeof(errbuf));
+    lib_http_err_t rc = lib_http_exec(NULL, NULL, &res);
     TEST_ASSERT_EQUAL_INT(LIB_HTTP_ERR_ARG, rc);
-    TEST_ASSERT_TRUE(errbuf[0] != '\0');
 
-    lib_http_ctx_t *ctx = lib_http_open(NULL, errbuf, sizeof(errbuf));
+    lib_http_ctx_t *ctx = lib_http_open(NULL);
     TEST_ASSERT_NOT_NULL(ctx);
 
     lib_http_req_t bad_req;
     memset(&bad_req, 0, sizeof(bad_req));
     bad_req.method = "GET\r\nEvil: 1";
     bad_req.url = g_srv.url_base;
-    rc = lib_http_exec(ctx, &bad_req, &res, errbuf, sizeof(errbuf));
+    rc = lib_http_exec(ctx, &bad_req, &res);
     TEST_ASSERT_EQUAL_INT(LIB_HTTP_ERR_ARG, rc);
 
     lib_http_close(ctx);
@@ -191,8 +189,7 @@ static void test_http_invalid_args(void)
 
 static void test_http_post_json_and_headers(void)
 {
-    char errbuf[128] = {0};
-    lib_http_ctx_t *ctx = lib_http_open(NULL, errbuf, sizeof(errbuf));
+    lib_http_ctx_t *ctx = lib_http_open(NULL);
     TEST_ASSERT_NOT_NULL(ctx);
 
     char url[256];
@@ -204,9 +201,7 @@ static void test_http_post_json_and_headers(void)
                                            "secret-tok-123",
                                            "{\"hello\":\"world\"}",
                                            2000,
-                                           &res,
-                                           errbuf,
-                                           sizeof(errbuf));
+                                           &res);
     TEST_ASSERT_EQUAL_INT(LIB_HTTP_OK, rc);
     TEST_ASSERT_EQUAL_INT(200, res.status_code);
     TEST_ASSERT_NOT_NULL(res.body);
@@ -225,7 +220,7 @@ static void test_http_post_json_and_headers(void)
     req.header_num = 1u;
     req.timeout_ms = 2000;
 
-    rc = lib_http_exec(ctx, &req, &res, errbuf, sizeof(errbuf));
+    rc = lib_http_exec(ctx, &req, &res);
     TEST_ASSERT_EQUAL_INT(LIB_HTTP_OK, rc);
     TEST_ASSERT_EQUAL_INT(200, res.status_code);
     TEST_ASSERT_NOT_NULL(res.body);
@@ -238,8 +233,7 @@ static void test_http_post_json_and_headers(void)
 
 static void test_http_status_codes(void)
 {
-    char errbuf[128] = {0};
-    lib_http_ctx_t *ctx = lib_http_open(NULL, errbuf, sizeof(errbuf));
+    lib_http_ctx_t *ctx = lib_http_open(NULL);
     TEST_ASSERT_NOT_NULL(ctx);
 
     char url404[256];
@@ -251,7 +245,7 @@ static void test_http_status_codes(void)
     req404.url = url404;
 
     lib_http_res_t res;
-    lib_http_err_t rc = lib_http_exec(ctx, &req404, &res, errbuf, sizeof(errbuf));
+    lib_http_err_t rc = lib_http_exec(ctx, &req404, &res);
     TEST_ASSERT_EQUAL_INT(LIB_HTTP_OK, rc);
     TEST_ASSERT_EQUAL_INT(404, res.status_code);
     TEST_ASSERT_NOT_NULL(res.body);
@@ -260,7 +254,7 @@ static void test_http_status_codes(void)
 
     char url500[256];
     snprintf(url500, sizeof(url500), "%s/status/500", g_srv.url_base);
-    rc = lib_http_post_json(ctx, url500, NULL, "{}", 2000, &res, errbuf, sizeof(errbuf));
+    rc = lib_http_post_json(ctx, url500, NULL, "{}", 2000, &res);
     TEST_ASSERT_EQUAL_INT(LIB_HTTP_OK, rc);
     TEST_ASSERT_EQUAL_INT(500, res.status_code);
     TEST_ASSERT_NOT_NULL(res.body);
@@ -272,12 +266,11 @@ static void test_http_status_codes(void)
 
 static void test_http_max_resp_size(void)
 {
-    char errbuf[128] = {0};
     lib_http_cfg_t cfg = {
         .timeout_ms  = 2000,
         .max_resp_sz = 16u
     };
-    lib_http_ctx_t *ctx = lib_http_open(&cfg, errbuf, sizeof(errbuf));
+    lib_http_ctx_t *ctx = lib_http_open(&cfg);
     TEST_ASSERT_NOT_NULL(ctx);
 
     char url[256];
@@ -289,7 +282,7 @@ static void test_http_max_resp_size(void)
     req.url = url;
 
     lib_http_res_t res;
-    lib_http_err_t rc = lib_http_exec(ctx, &req, &res, errbuf, sizeof(errbuf));
+    lib_http_err_t rc = lib_http_exec(ctx, &req, &res);
     TEST_ASSERT_EQUAL_INT(LIB_HTTP_ERR_SIZE, rc);
     TEST_ASSERT_NULL(res.body);
 
@@ -298,8 +291,7 @@ static void test_http_max_resp_size(void)
 
 static void test_http_timeout(void)
 {
-    char errbuf[128] = {0};
-    lib_http_ctx_t *ctx = lib_http_open(NULL, errbuf, sizeof(errbuf));
+    lib_http_ctx_t *ctx = lib_http_open(NULL);
     TEST_ASSERT_NOT_NULL(ctx);
 
     char url[256];
@@ -312,7 +304,7 @@ static void test_http_timeout(void)
     req.timeout_ms = 80;
 
     lib_http_res_t res;
-    lib_http_err_t rc = lib_http_exec(ctx, &req, &res, errbuf, sizeof(errbuf));
+    lib_http_err_t rc = lib_http_exec(ctx, &req, &res);
     TEST_ASSERT_EQUAL_INT(LIB_HTTP_ERR_TIMEOUT, rc);
     TEST_ASSERT_NULL(res.body);
 
@@ -321,7 +313,6 @@ static void test_http_timeout(void)
 
 static void test_http_real_https_get(void)
 {
-    char errbuf[256] = {0};
     lib_http_cfg_t cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.timeout_ms = 8000;
@@ -329,7 +320,7 @@ static void test_http_real_https_get(void)
     cfg.ca_path = LIBAGENT_TEST_CA_PATH;
 #endif
 
-    lib_http_ctx_t *ctx = lib_http_open(&cfg, errbuf, sizeof(errbuf));
+    lib_http_ctx_t *ctx = lib_http_open(&cfg);
     TEST_ASSERT_NOT_NULL(ctx);
 
     lib_http_req_t req;
@@ -339,7 +330,7 @@ static void test_http_real_https_get(void)
     req.timeout_ms = 8000;
 
     lib_http_res_t res;
-    lib_http_err_t rc = lib_http_exec(ctx, &req, &res, errbuf, sizeof(errbuf));
+    lib_http_err_t rc = lib_http_exec(ctx, &req, &res);
 
 #if defined(MG_TLS) && (MG_TLS != MG_TLS_NONE)
     if (rc != LIB_HTTP_OK) {

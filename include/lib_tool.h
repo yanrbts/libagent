@@ -62,9 +62,7 @@ typedef struct lib_tool_res {
  */
 typedef lib_tool_err_t (*lib_tool_fn_t)(const lib_tool_call_t *call,
                                         void                  *tool_ctx,
-                                        lib_tool_res_t        *out_res,
-                                        char                  *errbuf,
-                                        size_t                 errlen);
+                                        lib_tool_res_t        *out_res);
 
 /**
  * Optional destructor for releasing private tool context state.
@@ -103,11 +101,9 @@ LIBAGENT_API const char *lib_tool_strerror(lib_tool_err_t err);
 /**
  * Allocate and initialize an empty tool registry instance.
  *
- * @param[out] errbuf    Optional buffer for error details on allocation failure.
- * @param[in]  errlen    Capacity of errbuf in bytes.
- * @return               Newly allocated registry handle, or NULL on failure.
+ * @return Newly allocated registry handle, or NULL on failure.
  */
-LIBAGENT_API lib_tool_reg_t *lib_tool_new(char *errbuf, size_t errlen);
+LIBAGENT_API lib_tool_reg_t *lib_tool_new(void);
 
 /**
  * Destroy a tool registry, invoke registered destructors, and release all memory.
@@ -146,28 +142,20 @@ LIBAGENT_API int lib_tool_has(const lib_tool_reg_t *reg, const char *name);
  *
  * @param[in,out] reg    Target tool registry.
  * @param[in]     spec   Tool specification to copy and register.
- * @param[out]    errbuf Optional buffer for error diagnostics.
- * @param[in]     errlen Capacity of errbuf in bytes.
  * @return               LIB_TOOL_OK on success, or an error code on failure.
  */
 LIBAGENT_API lib_tool_err_t lib_tool_add(lib_tool_reg_t *reg,
-                             const lib_tool_spec_t *spec,
-                             char                  *errbuf,
-                             size_t                 errlen);
+                             const lib_tool_spec_t *spec);
 
 /**
  * Unregister a tool by name and invoke its destructor if configured.
  *
  * @param[in,out] reg    Target tool registry.
  * @param[in]     name   Name of the tool to remove.
- * @param[out]    errbuf Optional buffer for error diagnostics.
- * @param[in]     errlen Capacity of errbuf in bytes.
  * @return               LIB_TOOL_OK on success, or LIB_TOOL_ERR_NOTFOUND / error code.
  */
 LIBAGENT_API lib_tool_err_t lib_tool_del(lib_tool_reg_t  *reg,
-                             const char     *name,
-                             char           *errbuf,
-                             size_t          errlen);
+                                        const char       *name);
 
 /**
  * Enable or disable a single registered tool without removing it.
@@ -175,15 +163,11 @@ LIBAGENT_API lib_tool_err_t lib_tool_del(lib_tool_reg_t  *reg,
  * @param[in,out] reg     Target tool registry.
  * @param[in]     name    Name of the target tool.
  * @param[in]     enabled Non-zero to enable, zero to disable.
- * @param[out]    errbuf  Optional buffer for error diagnostics.
- * @param[in]     errlen  Capacity of errbuf in bytes.
  * @return                LIB_TOOL_OK on success, or an error code on failure.
  */
-LIBAGENT_API lib_tool_err_t lib_tool_enable(lib_tool_reg_t  *reg,
-                                const char     *name,
-                                int             enabled,
-                                char           *errbuf,
-                                size_t          errlen);
+LIBAGENT_API lib_tool_err_t lib_tool_enable(lib_tool_reg_t *reg,
+                                            const char     *name,
+                                            int             enabled);
 
 /**
  * Enable or disable all tools matching a given grouping tag.
@@ -192,16 +176,12 @@ LIBAGENT_API lib_tool_err_t lib_tool_enable(lib_tool_reg_t  *reg,
  * @param[in]     tag      Non-empty tag string to match against registered tools.
  * @param[in]     enabled  Non-zero to enable matching tools, zero to disable.
  * @param[out]    out_cnt  Optional output count of tools whose state was matched.
- * @param[out]    errbuf   Optional buffer for error diagnostics.
- * @param[in]     errlen   Capacity of errbuf in bytes.
  * @return                 LIB_TOOL_OK on success, or an error code on failure.
  */
 LIBAGENT_API lib_tool_err_t lib_tool_enable_tag(lib_tool_reg_t  *reg,
                                     const char     *tag,
                                     int             enabled,
-                                    size_t         *out_cnt,
-                                    char           *errbuf,
-                                    size_t          errlen);
+                                    size_t         *out_cnt);
 
 /**
  * Build a heap-allocated array of LLM tool definitions from enabled tools.
@@ -209,15 +189,11 @@ LIBAGENT_API lib_tool_err_t lib_tool_enable_tag(lib_tool_reg_t  *reg,
  * @param[in]  reg       Source tool registry.
  * @param[out] out_defs  Receives allocated array of lib_llm_tool_def_t (NULL if count is 0).
  * @param[out] out_cnt   Receives number of entries written to *out_defs.
- * @param[out] errbuf    Optional buffer for error diagnostics.
- * @param[in]  errlen    Capacity of errbuf in bytes.
  * @return               LIB_TOOL_OK on success, or LIB_TOOL_ERR_MEM / LIB_TOOL_ERR_ARG.
  */
 LIBAGENT_API lib_tool_err_t lib_tool_llm_defs(const lib_tool_reg_t  *reg,
                                   lib_llm_tool_def_t   **out_defs,
-                                  size_t                *out_cnt,
-                                  char                  *errbuf,
-                                  size_t                 errlen);
+                                  size_t                *out_cnt);
 
 /**
  * Release an array of LLM tool definitions produced by lib_tool_llm_defs().
@@ -236,8 +212,6 @@ LIBAGENT_API void lib_tool_free_defs(lib_llm_tool_def_t *defs, size_t count);
  * @param[in]  args_json JSON-encoded argument string (NULL/blank normalized to "{}").
  * @param[in]  user_ctx  Optional caller/session context forwarded in lib_tool_call_t.
  * @param[out] out_res   Receives tool execution output on success.
- * @param[out] errbuf    Optional buffer for error diagnostics.
- * @param[in]  errlen    Capacity of errbuf in bytes.
  * @return               LIB_TOOL_OK on success, or a negative lib_tool_err_t on failure.
  */
 LIBAGENT_API lib_tool_err_t lib_tool_exec(const lib_tool_reg_t  *reg,
@@ -245,9 +219,7 @@ LIBAGENT_API lib_tool_err_t lib_tool_exec(const lib_tool_reg_t  *reg,
                               const char           *name,
                               const char           *args_json,
                               void                 *user_ctx,
-                              lib_tool_res_t       *out_res,
-                              char                 *errbuf,
-                              size_t                errlen);
+                              lib_tool_res_t       *out_res);
 
 /**
  * Dispatch a tool invocation from a parsed lib_llm_tool_call_t record.
@@ -256,16 +228,12 @@ LIBAGENT_API lib_tool_err_t lib_tool_exec(const lib_tool_reg_t  *reg,
  * @param[in]  call      Parsed tool call descriptor from lib_llm_res_t.
  * @param[in]  user_ctx  Optional caller/session context forwarded to the tool.
  * @param[out] out_res   Receives tool execution output on success.
- * @param[out] errbuf    Optional buffer for error diagnostics.
- * @param[in]  errlen    Capacity of errbuf in bytes.
  * @return               LIB_TOOL_OK on success, or a negative lib_tool_err_t on failure.
  */
 LIBAGENT_API lib_tool_err_t lib_tool_exec_call(const lib_tool_reg_t *reg,
                                    const lib_llm_tool_call_t *call,
                                    void                      *user_ctx,
-                                   lib_tool_res_t            *out_res,
-                                   char                      *errbuf,
-                                   size_t                     errlen);
+                                   lib_tool_res_t            *out_res);
 
 /**
  * Release heap memory inside a lib_tool_res_t and zero-initialize the struct.

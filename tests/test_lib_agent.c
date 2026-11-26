@@ -6,6 +6,7 @@
 
 #include "unity.h"
 #include "lib_agent.h"
+#include "lib_error.h"
 #include "util.h"
 
 #include <stdio.h>
@@ -35,14 +36,14 @@ static void reset_ctx(void)
     g_ctx.scripted_tool_rc        = LIB_AGENT_OK;
     g_ctx.scripted_calls_per_step = 1u;
     g_ctx.scripted_errs_per_step  = 0u;
+    lib_err_set_log_sink(NULL, NULL);
+    lib_err_clear();
 }
 
 static lib_agent_err_t mock_on_llm(void                  *user_ctx,
                                    const char            *agent_name,
                                    size_t                 step_idx,
-                                   lib_agent_turn_kind_t *out_kind,
-                                   char                  *errbuf,
-                                   size_t                 errlen)
+                                   lib_agent_turn_kind_t *out_kind)
 {
     mock_agent_ctx_t *ctx = (mock_agent_ctx_t *)user_ctx;
     size_t            idx = 0u;
@@ -51,13 +52,14 @@ static lib_agent_err_t mock_on_llm(void                  *user_ctx,
     (void)step_idx;
 
     if (lib_unlikely(ctx == NULL || out_kind == NULL)) {
+        lib_err_emit_msg(LIB_ERR_DOM_AGENT, LIB_ERR_INVALID_ARG,
+                         "mock_on_llm received NULL argument");
         return LIB_AGENT_ERR_ARG;
     }
 
     if (lib_unlikely(ctx->scripted_llm_rc != LIB_AGENT_OK)) {
-        if (errbuf != NULL && errlen > 0u) {
-            (void)snprintf(errbuf, errlen, "mock llm failure");
-        }
+        lib_err_emit_msg(LIB_ERR_DOM_LLM, LIB_ERR_INTERNAL,
+                         "mock llm failure");
         return ctx->scripted_llm_rc;
     }
 
@@ -83,9 +85,7 @@ static lib_agent_err_t mock_on_tools(void       *user_ctx,
                                      const char *agent_name,
                                      size_t      step_idx,
                                      size_t     *out_calls,
-                                     size_t     *out_errors,
-                                     char       *errbuf,
-                                     size_t      errlen)
+                                     size_t     *out_errors)
 {
     mock_agent_ctx_t *ctx = (mock_agent_ctx_t *)user_ctx;
 
@@ -93,13 +93,14 @@ static lib_agent_err_t mock_on_tools(void       *user_ctx,
     (void)step_idx;
 
     if (lib_unlikely(ctx == NULL || out_calls == NULL || out_errors == NULL)) {
+        lib_err_emit_msg(LIB_ERR_DOM_AGENT, LIB_ERR_INVALID_ARG,
+                         "mock_on_tools received NULL argument");
         return LIB_AGENT_ERR_ARG;
     }
 
     if (lib_unlikely(ctx->scripted_tool_rc != LIB_AGENT_OK)) {
-        if (errbuf != NULL && errlen > 0u) {
-            (void)snprintf(errbuf, errlen, "mock tool failure");
-        }
+        lib_err_emit_msg(LIB_ERR_DOM_TOOL, LIB_ERR_TOOL_EXEC,
+                         "mock tool failure");
         return ctx->scripted_tool_rc;
     }
 
@@ -141,10 +142,8 @@ static void test_lifecycle_defaults_and_helpers(void)
 {
     lib_agent_t    *ag  = NULL;
     lib_agent_ops_t ops;
-    char            errbuf[128];
 
     memset(&ops, 0, sizeof(ops));
-    memset(errbuf, 0, sizeof(errbuf));
 
     TEST_ASSERT_NOT_NULL(lib_agent_strerror(LIB_AGENT_OK));
     TEST_ASSERT_NOT_NULL(lib_agent_strerror(LIB_AGENT_ERR_STEP));
@@ -156,17 +155,19 @@ static void test_lifecycle_defaults_and_helpers(void)
     TEST_ASSERT_EQUAL_INT(LIB_AGENT_ST_ABORTED, lib_agent_state(NULL));
 
     /* Missing required callbacks must fail */
-    TEST_ASSERT_NULL(lib_agent_new(NULL, NULL, errbuf, sizeof(errbuf)));
-    TEST_ASSERT_TRUE(errbuf[0] != '\0');
+    TEST_ASSERT_NULL(lib_agent_new(NULL, NULL));
+    TEST_ASSERT_TRUE(lib_err_last()->msg[0] != '\0');
 
+    lib_err_clear();
     ops.on_llm = mock_on_llm;
-    TEST_ASSERT_NULL(lib_agent_new(NULL, &ops, errbuf, sizeof(errbuf)));
+    TEST_ASSERT_NULL(lib_agent_new(NULL, &ops));
+    TEST_ASSERT_TRUE(lib_err_last()->msg[0] != '\0');
 
     ops.on_tools = mock_on_tools;
     ops.on_step  = mock_on_step;
 
     /* NULL cfg applies default name and IDLE state */
-    ag = lib_agent_new(NULL, &ops, errbuf, sizeof(errbuf));
+    ag = lib_agent_new(NULL, &ops);
     TEST_ASSERT_NOT_NULL(ag);
     TEST_ASSERT_EQUAL_STRING("agent", lib_agent_name(ag));
     TEST_ASSERT_EQUAL_INT(LIB_AGENT_ST_IDLE, lib_agent_state(ag));
@@ -184,12 +185,10 @@ static void test_multi_step_run_and_reset(void)
     lib_agent_ops_t       ops;
     lib_agent_step_info_t info;
     lib_agent_err_t       rc   = LIB_AGENT_OK;
-    char                  errbuf[128];
 
     memset(&cfg, 0, sizeof(cfg));
     memset(&ops, 0, sizeof(ops));
     memset(&info, 0, sizeof(info));
-    memset(errbuf, 0, sizeof(errbuf));
 
     g_ctx.scripted_kinds[0]       = LIB_AGENT_TURN_TOOLS;
     g_ctx.scripted_kinds[1]       = LIB_AGENT_TURN_TOOLS;
@@ -206,11 +205,11 @@ static void test_multi_step_run_and_reset(void)
     ops.on_tools = mock_on_tools;
     ops.on_step  = mock_on_step;
 
-    ag = lib_agent_new(&cfg, &ops, errbuf, sizeof(errbuf));
+    ag = lib_agent_new(&cfg, &ops);
     TEST_ASSERT_NOT_NULL(ag);
     TEST_ASSERT_EQUAL_STRING("planner", lib_agent_name(ag));
 
-    rc = lib_agent_run(ag, &info, errbuf, sizeof(errbuf));
+    rc = lib_agent_run(ag, &info);
     TEST_ASSERT_EQUAL_INT(LIB_AGENT_OK, rc);
     TEST_ASSERT_EQUAL_INT(LIB_AGENT_ST_DONE, lib_agent_state(ag));
     TEST_ASSERT_EQUAL_UINT64(3u, (unsigned long long)lib_agent_steps(ag));
@@ -221,11 +220,11 @@ static void test_multi_step_run_and_reset(void)
     TEST_ASSERT_EQUAL_INT(LIB_AGENT_ST_DONE, info.state);
 
     /* Running again from terminal state without reset must return ERR_STATE */
-    rc = lib_agent_run(ag, &info, errbuf, sizeof(errbuf));
+    rc = lib_agent_run(ag, &info);
     TEST_ASSERT_EQUAL_INT(LIB_AGENT_ERR_STATE, rc);
 
     /* Reset allows clean reuse */
-    rc = lib_agent_reset(ag, errbuf, sizeof(errbuf));
+    rc = lib_agent_reset(ag);
     TEST_ASSERT_EQUAL_INT(LIB_AGENT_OK, rc);
     TEST_ASSERT_EQUAL_INT(LIB_AGENT_ST_IDLE, lib_agent_state(ag));
     TEST_ASSERT_EQUAL_UINT64(0u, (unsigned long long)lib_agent_steps(ag));
@@ -240,12 +239,10 @@ static void test_step_limit_and_tool_error_policy(void)
     lib_agent_ops_t       ops;
     lib_agent_step_info_t info;
     lib_agent_err_t       rc   = LIB_AGENT_OK;
-    char                  errbuf[128];
 
     memset(&cfg, 0, sizeof(cfg));
     memset(&ops, 0, sizeof(ops));
     memset(&info, 0, sizeof(info));
-    memset(errbuf, 0, sizeof(errbuf));
 
     /* Always ask for tools so max_steps=2 triggers LIB_AGENT_ERR_STEP */
     g_ctx.scripted_kinds[0]       = LIB_AGENT_TURN_TOOLS;
@@ -263,11 +260,11 @@ static void test_step_limit_and_tool_error_policy(void)
     ops.on_llm   = mock_on_llm;
     ops.on_tools = mock_on_tools;
 
-    ag = lib_agent_new(&cfg, &ops, errbuf, sizeof(errbuf));
+    ag = lib_agent_new(&cfg, &ops);
     TEST_ASSERT_NOT_NULL(ag);
 
     /* stop_on_tool_err == 0 allows continuing across tool errors until max_steps */
-    rc = lib_agent_run(ag, &info, errbuf, sizeof(errbuf));
+    rc = lib_agent_run(ag, &info);
     TEST_ASSERT_EQUAL_INT(LIB_AGENT_ERR_STEP, rc);
     TEST_ASSERT_EQUAL_INT(LIB_AGENT_ST_ABORTED, lib_agent_state(ag));
     TEST_ASSERT_EQUAL_UINT64(2u, (unsigned long long)lib_agent_steps(ag));
@@ -275,18 +272,18 @@ static void test_step_limit_and_tool_error_policy(void)
     /* Reconfigure with stop_on_tool_err == 1 */
     lib_agent_free(ag);
     reset_ctx();
-    g_ctx.scripted_kinds[0]      = LIB_AGENT_TURN_TOOLS;
-    g_ctx.scripted_kind_cnt      = 1u;
+    g_ctx.scripted_kinds[0]       = LIB_AGENT_TURN_TOOLS;
+    g_ctx.scripted_kind_cnt       = 1u;
     g_ctx.scripted_calls_per_step = 1u;
     g_ctx.scripted_errs_per_step  = 1u;
 
     cfg.stop_on_tool_err = 1;
     cfg.user_ctx         = &g_ctx;
 
-    ag = lib_agent_new(&cfg, &ops, errbuf, sizeof(errbuf));
+    ag = lib_agent_new(&cfg, &ops);
     TEST_ASSERT_NOT_NULL(ag);
 
-    rc = lib_agent_step(ag, &info, errbuf, sizeof(errbuf));
+    rc = lib_agent_step(ag, &info);
     TEST_ASSERT_EQUAL_INT(LIB_AGENT_ERR_TOOL, rc);
     TEST_ASSERT_EQUAL_INT(LIB_AGENT_ST_ABORTED, lib_agent_state(ag));
     TEST_ASSERT_EQUAL_UINT64(1u, (unsigned long long)info.tool_errors);
@@ -301,12 +298,10 @@ static void test_cancel_hook_and_callback_failures(void)
     lib_agent_ops_t       ops;
     lib_agent_step_info_t info;
     lib_agent_err_t       rc   = LIB_AGENT_OK;
-    char                  errbuf[128];
 
     memset(&cfg, 0, sizeof(cfg));
     memset(&ops, 0, sizeof(ops));
     memset(&info, 0, sizeof(info));
-    memset(errbuf, 0, sizeof(errbuf));
 
     cfg.name     = "guard";
     cfg.user_ctx = &g_ctx;
@@ -316,56 +311,53 @@ static void test_cancel_hook_and_callback_failures(void)
 
     /* Abort requested inside on_step hook */
     g_ctx.abort_on_step_hook = 1;
-    ag = lib_agent_new(&cfg, &ops, errbuf, sizeof(errbuf));
+    ag = lib_agent_new(&cfg, &ops);
     TEST_ASSERT_NOT_NULL(ag);
 
-    rc = lib_agent_run(ag, &info, errbuf, sizeof(errbuf));
+    rc = lib_agent_run(ag, &info);
     TEST_ASSERT_EQUAL_INT(LIB_AGENT_ERR_ABORT, rc);
     TEST_ASSERT_EQUAL_INT(LIB_AGENT_ST_ABORTED, lib_agent_state(ag));
     lib_agent_free(ag);
 
     /* Cancellation requested during LLM callback */
     reset_ctx();
-    memset(errbuf, 0, sizeof(errbuf));
     g_ctx.scripted_kinds[0]      = LIB_AGENT_TURN_TOOLS;
     g_ctx.scripted_kind_cnt      = 1u;
     g_ctx.cancel_after_llm_calls = 1u;
 
-    ag = lib_agent_new(&cfg, &ops, errbuf, sizeof(errbuf));
+    ag = lib_agent_new(&cfg, &ops);
     TEST_ASSERT_NOT_NULL(ag);
     g_ctx.cancel_target = ag;
 
-    rc = lib_agent_run(ag, &info, errbuf, sizeof(errbuf));
+    rc = lib_agent_run(ag, &info);
     TEST_ASSERT_EQUAL_INT(LIB_AGENT_ERR_ABORT, rc);
     TEST_ASSERT_EQUAL_INT(LIB_AGENT_ST_ABORTED, lib_agent_state(ag));
     lib_agent_free(ag);
 
     /* LLM callback fatal error */
     reset_ctx();
-    memset(errbuf, 0, sizeof(errbuf));
     g_ctx.scripted_llm_rc = LIB_AGENT_ERR_LLM;
-    ag = lib_agent_new(&cfg, &ops, errbuf, sizeof(errbuf));
+    ag = lib_agent_new(&cfg, &ops);
     TEST_ASSERT_NOT_NULL(ag);
 
-    rc = lib_agent_run(ag, &info, errbuf, sizeof(errbuf));
+    rc = lib_agent_run(ag, &info);
     TEST_ASSERT_EQUAL_INT(LIB_AGENT_ERR_LLM, rc);
     TEST_ASSERT_EQUAL_INT(LIB_AGENT_ST_ABORTED, lib_agent_state(ag));
-    TEST_ASSERT_EQUAL_STRING("mock llm failure", errbuf);
+    TEST_ASSERT_NOT_NULL(strstr(lib_err_last()->msg, "mock llm failure"));
     lib_agent_free(ag);
 
     /* Tool callback fatal error */
     reset_ctx();
-    memset(errbuf, 0, sizeof(errbuf));
     g_ctx.scripted_kinds[0] = LIB_AGENT_TURN_TOOLS;
     g_ctx.scripted_kind_cnt = 1u;
     g_ctx.scripted_tool_rc  = LIB_AGENT_ERR_TOOL;
-    ag = lib_agent_new(&cfg, &ops, errbuf, sizeof(errbuf));
+    ag = lib_agent_new(&cfg, &ops);
     TEST_ASSERT_NOT_NULL(ag);
 
-    rc = lib_agent_run(ag, &info, errbuf, sizeof(errbuf));
+    rc = lib_agent_run(ag, &info);
     TEST_ASSERT_EQUAL_INT(LIB_AGENT_ERR_TOOL, rc);
     TEST_ASSERT_EQUAL_INT(LIB_AGENT_ST_ABORTED, lib_agent_state(ag));
-    TEST_ASSERT_EQUAL_STRING("mock tool failure", errbuf);
+    TEST_ASSERT_NOT_NULL(strstr(lib_err_last()->msg, "mock tool failure"));
     lib_agent_free(ag);
 }
 

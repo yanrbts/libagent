@@ -89,9 +89,7 @@ typedef struct lib_http_ctx lib_http_ctx_t;
  * @param[in]  errlen Capacity of errbuf in bytes.
  * @return            Newly allocated context on success, or NULL on failure.
  */
-LIBAGENT_API lib_http_ctx_t *lib_http_open(const lib_http_cfg_t *cfg,
-                                           char *errbuf,
-                                           size_t errlen);
+LIBAGENT_API lib_http_ctx_t *lib_http_open(const lib_http_cfg_t *cfg);
 
 /**
  * Releases an HTTP client context. Safe to call with NULL.
@@ -106,15 +104,11 @@ LIBAGENT_API void lib_http_close(lib_http_ctx_t *ctx);
  * @param[in]  ctx     Initialized HTTP client context.
  * @param[in]  req     Request specification to execute.
  * @param[out] out_res Output response structure (reset on entry; freed on error).
- * @param[out] errbuf  Optional buffer for human-readable error details.
- * @param[in]  errlen  Capacity of errbuf in bytes.
  * @return             LIB_HTTP_OK on success, or a negative lib_http_err_t code.
  */
 LIBAGENT_API lib_http_err_t lib_http_exec(lib_http_ctx_t *ctx,
                                           const lib_http_req_t *req,
-                                          lib_http_res_t *out_res,
-                                          char *errbuf,
-                                          size_t errlen);
+                                          lib_http_res_t *out_res);
 
 /**
  * Executes a JSON request with standard JSON headers and optional Bearer token.
@@ -136,9 +130,7 @@ LIBAGENT_API lib_http_err_t lib_http_request_json(lib_http_ctx_t *ctx,
                                                   const char *bearer_tok,
                                                   const char *json_body,
                                                   int timeout_ms,
-                                                  lib_http_res_t *out_res,
-                                                  char *errbuf,
-                                                  size_t errlen);
+                                                  lib_http_res_t *out_res);
 
 /**
  * Convenience wrapper for sending an HTTP POST request with a JSON payload.
@@ -158,9 +150,7 @@ LIBAGENT_API lib_http_err_t lib_http_post_json(lib_http_ctx_t *ctx,
                                                  const char *bearer_tok,
                                                  const char *json_body,
                                                  int timeout_ms,
-                                                 lib_http_res_t *out_res,
-                                                 char *errbuf,
-                                                 size_t errlen);
+                                                 lib_http_res_t *out_res);
 
 /**
  * Releases all heap memory owned by res and resets its fields to zero.

@@ -4,6 +4,7 @@
  * Production-grade synchronous HTTP client built on Mongoose.
  */
 #include "lib_http.h"
+#include "lib_error.h"
 #include "mongoose.h"
 #include "util.h"
 
@@ -26,7 +27,6 @@ struct lib_http_ctx {
     int    poll_step_ms;
     const char *ca_path;    /**< Optional CA bundle path for TLS verification; NULL uses system/default */
     int    tls_skip_verify; /**< Non-zero to skip peer certificate verification (testing only) */
-    char   last_err[256];
 };
 
 typedef struct http_run_state {
@@ -46,17 +46,6 @@ typedef struct http_run_state {
     char                  err_msg[256];
 } http_run_state_t;
 
-static void http_set_err_buf(char *errbuf, size_t errlen, const char *fmt, ...)
-{
-    if (errbuf == NULL || errlen == 0u) {
-        return;
-    }
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(errbuf, errlen, fmt, ap);
-    va_end(ap);
-}
-
 static void http_fail(http_run_state_t *st, lib_http_err_t code, const char *fmt, ...)
 {
     if (st == NULL) {
@@ -74,18 +63,6 @@ static void http_fail(http_run_state_t *st, lib_http_err_t code, const char *fmt
     if (st->conn != NULL) {
         st->conn->is_closing = 1;
     }
-}
-
-static void http_record_err(lib_http_ctx_t *ctx,
-                            char *errbuf,
-                            size_t errlen,
-                            const char *msg)
-{
-    const char *s = (msg != NULL && msg[0] != '\0') ? msg : "unknown http error";
-    if (ctx != NULL) {
-        snprintf(ctx->last_err, sizeof(ctx->last_err), "%s", s);
-    }
-    http_set_err_buf(errbuf, errlen, "%s", s);
 }
 
 /* Reject CR/LF/NUL/control chars to prevent header/request-line injection. */
@@ -395,13 +372,11 @@ static void http_ev_handler(struct mg_connection *c, int ev, void *ev_data)
     }
 }
 
-lib_http_ctx_t *lib_http_open(const lib_http_cfg_t *cfg,
-                              char *errbuf,
-                              size_t errlen)
+lib_http_ctx_t *lib_http_open(const lib_http_cfg_t *cfg)
 {
     lib_http_ctx_t *ctx = (lib_http_ctx_t *)calloc(1u, sizeof(*ctx));
     if (ctx == NULL) {
-        http_set_err_buf(errbuf, errlen, "out of memory allocating lib_http_ctx");
+        lib_err_emit_msg(LIB_ERR_DOM_HTTP, LIB_ERR_NOMEM, "out of memory allocating lib_http_ctx");
         return NULL;
     }
 
@@ -427,7 +402,7 @@ lib_http_ctx_t *lib_http_open(const lib_http_cfg_t *cfg,
             ctx->ca_path = strdup(cfg->ca_path);
             if (ctx->ca_path == NULL) {
                 free(ctx);
-                http_set_err_buf(errbuf, errlen, "out of memory duplicating ca_path");
+                lib_err_emit_msg(LIB_ERR_DOM_HTTP, LIB_ERR_NOMEM, "out of memory duplicating ca_path");
                 return NULL;
             }
         }
@@ -469,34 +444,32 @@ void lib_http_free_res(lib_http_res_t *res)
 
 lib_http_err_t lib_http_exec(lib_http_ctx_t *ctx,
                              const lib_http_req_t *req,
-                             lib_http_res_t *out_res,
-                             char *errbuf,
-                             size_t errlen)
+                             lib_http_res_t *out_res)
 {
     if (lib_unlikely(ctx == NULL || req == NULL || out_res == NULL)) {
-        http_record_err(ctx, errbuf, errlen, "ctx, req, and out_res must not be NULL");
+        lib_err_emit_msg(LIB_ERR_DOM_HTTP, LIB_ERR_INVALID_ARG, "ctx, req, and out_res must not be NULL");
         return LIB_HTTP_ERR_ARG;
     }
 
     memset(out_res, 0, sizeof(*out_res));
 
     if (lib_unlikely(!http_valid_method(req->method))) {
-        http_record_err(ctx, errbuf, errlen, "invalid or unsafe HTTP method");
+        lib_err_emit_msg(LIB_ERR_DOM_HTTP, LIB_ERR_INVALID_ARG, "invalid or unsafe HTTP method");
         return LIB_HTTP_ERR_ARG;
     }
 
     if (lib_unlikely(!http_valid_url(req->url))) {
-        http_record_err(ctx, errbuf, errlen, "invalid or unsafe URL");
+        lib_err_emit_msg(LIB_ERR_DOM_HTTP, LIB_ERR_INVALID_ARG, "invalid or unsafe URL");
         return LIB_HTTP_ERR_ARG;
     }
 
     if (lib_unlikely(req->header_num > 0u && req->headers == NULL)) {
-        http_record_err(ctx, errbuf, errlen, "headers is NULL while header_num > 0");
+        lib_err_emit_msg(LIB_ERR_DOM_HTTP, LIB_ERR_INVALID_ARG, "headers is NULL while header_num > 0");
         return LIB_HTTP_ERR_ARG;
     }
 
     if (lib_unlikely(req->body_len > 0u && req->body == NULL)) {
-        http_record_err(ctx, errbuf, errlen, "body is NULL while body_len > 0");
+        lib_err_emit_msg(LIB_ERR_DOM_HTTP, LIB_ERR_INVALID_ARG, "body is NULL while body_len > 0");
         return LIB_HTTP_ERR_ARG;
     }
 
@@ -504,11 +477,11 @@ lib_http_err_t lib_http_exec(lib_http_ctx_t *ctx,
         const char *hn = req->headers[i].name;
         const char *hv = req->headers[i].value;
         if (lib_unlikely(hn == NULL || hn[0] == '\0' || hv == NULL)) {
-            http_record_err(ctx, errbuf, errlen, "header name/value must not be NULL or empty");
+            lib_err_emit_msg(LIB_ERR_DOM_HTTP, LIB_ERR_INVALID_ARG, "header name/value must not be NULL or empty");
             return LIB_HTTP_ERR_ARG;
         }
         if (lib_unlikely(http_has_unsafe_ctl(hn, 0) || http_has_unsafe_ctl(hv, 1))) {
-            http_record_err(ctx, errbuf, errlen, "header name or value contains illegal control chars");
+            lib_err_emit_msg(LIB_ERR_DOM_HTTP, LIB_ERR_INVALID_ARG, "header name or value contains illegal control chars");
             return LIB_HTTP_ERR_ARG;
         }
     }
@@ -528,6 +501,8 @@ lib_http_err_t lib_http_exec(lib_http_ctx_t *ctx,
     st.deadline_ms = lib_mono_ms() + (int64_t)eff_timeout;
     st.err_code    = LIB_HTTP_OK;
 
+    mg_log_set(MG_LL_ERROR);
+
     struct mg_mgr mgr;
     mg_mgr_init(&mgr);
 
@@ -535,7 +510,7 @@ lib_http_err_t lib_http_exec(lib_http_ctx_t *ctx,
     if (st.conn == NULL) {
         mg_mgr_free(&mgr);
         lib_http_free_res(out_res);
-        http_record_err(ctx, errbuf, errlen, "mg_http_connect failed");
+        lib_err_emit_msg(LIB_ERR_DOM_HTTP, LIB_ERR_IO, "mg_http_connect failed");
         return LIB_HTTP_ERR_CONNECT;
     }
 
@@ -564,13 +539,13 @@ lib_http_err_t lib_http_exec(lib_http_ctx_t *ctx,
 
     if (st.failed) {
         lib_http_free_res(out_res);
-        http_record_err(ctx, errbuf, errlen, st.err_msg);
+        lib_err_emit_msg(LIB_ERR_DOM_HTTP, LIB_ERR_INTERNAL, "%s", st.err_msg);
         return st.err_code;
     }
 
     if (!st.msg_done) {
         lib_http_free_res(out_res);
-        http_record_err(ctx, errbuf, errlen, "HTTP request ended without complete response");
+        lib_err_emit_msg(LIB_ERR_DOM_HTTP, LIB_ERR_INTERNAL, "HTTP request ended without complete response");
         return LIB_HTTP_ERR_RECV;
     }
 
@@ -583,12 +558,10 @@ lib_http_err_t lib_http_request_json(lib_http_ctx_t *ctx,
                                      const char *bearer_tok,
                                      const char *json_body,
                                      int timeout_ms,
-                                     lib_http_res_t *out_res,
-                                     char *errbuf,
-                                     size_t errlen)
+                                     lib_http_res_t *out_res)
 {
     if (lib_unlikely(json_body == NULL)) {
-        http_record_err(ctx, errbuf, errlen, "json_body must not be NULL");
+        lib_err_emit_msg(LIB_ERR_DOM_HTTP, LIB_ERR_INVALID_ARG, "json_body must not be NULL");
         return LIB_HTTP_ERR_ARG;
     }
 
@@ -606,7 +579,7 @@ lib_http_err_t lib_http_request_json(lib_http_ctx_t *ctx,
     char auth_buf[1024];
     if (bearer_tok != NULL && bearer_tok[0] != '\0') {
         if (http_has_unsafe_ctl(bearer_tok, 0)) {
-            http_record_err(ctx, errbuf, errlen, "bearer token contains illegal control chars");
+            lib_err_emit_msg(LIB_ERR_DOM_HTTP, LIB_ERR_INVALID_ARG, "bearer token contains illegal control chars");
             return LIB_HTTP_ERR_ARG;
         }
         int n = 0;
@@ -616,7 +589,7 @@ lib_http_err_t lib_http_request_json(lib_http_ctx_t *ctx,
             n = snprintf(auth_buf, sizeof(auth_buf), "Bearer %s", bearer_tok);
         }
         if (lib_unlikely(n < 0 || (size_t)n >= sizeof(auth_buf))) {
-            http_record_err(ctx, errbuf, errlen, "bearer token exceeds header buffer");
+            lib_err_emit_msg(LIB_ERR_DOM_HTTP, LIB_ERR_INVALID_ARG, "bearer token exceeds header buffer");
             return LIB_HTTP_ERR_ARG;
         }
         hdrs[hcnt].name = "Authorization";
@@ -636,7 +609,7 @@ lib_http_err_t lib_http_request_json(lib_http_ctx_t *ctx,
     req.body_len   = strlen(json_body);
     req.timeout_ms = timeout_ms;
 
-    return lib_http_exec(ctx, &req, out_res, errbuf, errlen);
+    return lib_http_exec(ctx, &req, out_res);
 }
 
 lib_http_err_t lib_http_post_json(lib_http_ctx_t *ctx,
@@ -644,9 +617,7 @@ lib_http_err_t lib_http_post_json(lib_http_ctx_t *ctx,
                                     const char *bearer_tok,
                                     const char *json_body,
                                     int timeout_ms,
-                                    lib_http_res_t *out_res,
-                                    char *errbuf,
-                                    size_t errlen)
+                                    lib_http_res_t *out_res)
 {
     return lib_http_request_json(ctx,
                                  "POST",
@@ -654,9 +625,7 @@ lib_http_err_t lib_http_post_json(lib_http_ctx_t *ctx,
                                  bearer_tok,
                                  json_body,
                                  timeout_ms,
-                                 out_res,
-                                 errbuf,
-                                 errlen);
+                                 out_res);
 }
 
 const char *lib_http_strerror(lib_http_err_t err)
