@@ -41,7 +41,8 @@ typedef enum lib_err_domain {
     LIB_ERR_DOM_TOOL,       /**< Tool registry and execution layer. */
     LIB_ERR_DOM_AGENT,      /**< Agent execution loop and state machine. */
     LIB_ERR_DOM_MCP,        /**< Model Context Protocol client/transport layer. */
-    LIB_ERR_DOM_SKILL       /**< Skill loading and execution layer. */
+    LIB_ERR_DOM_SKILL,      /**< Skill loading and execution layer. */
+    LIB_ERR_DOM_LOOP        /**< Multi-agent scheduler and mailbox loop layer. */
 } lib_err_domain_t;
 
 /** Diagnostic severity level derived from error semantics and retryability. */

@@ -110,6 +110,7 @@ const char *lib_err_domain_str(lib_err_domain_t domain)
     case LIB_ERR_DOM_AGENT: return "AGENT";
     case LIB_ERR_DOM_MCP:   return "MCP";
     case LIB_ERR_DOM_SKILL: return "SKILL";
+    case LIB_ERR_DOM_LOOP:  return "LOOP";
     default:                return "NONE";
     }
 }
